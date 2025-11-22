@@ -1,4 +1,4 @@
-# Simstarr Relay Control
+# Simstarr Relay Control 1
 
 ## Overview
 Simstarr Relay Control is a Windows Forms application (.NET 10, C# 14) used to monitor Elite Dangerous journal events and drive external relay-controlled hardware (fog machine + 3 additional relays). It supports three operating modes to split responsibilities across PCs or run everything locally.
