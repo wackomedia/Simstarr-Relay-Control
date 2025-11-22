@@ -1,6 +1,8 @@
 # Simstarr Relay Control
 
-Simstarr Relay Control is a Windows application that integrates with Elite Dangerous to provide real-world haptic feedback via USB relays. It can trigger fog machines or other devices based on journal updates, enhancing immersion during gameplay. The Simstarr is an advanced motion simulator platform with special needs, so this program can separate game and hardware features of the app to multiple computers. Stand Alone mode will be most useful to you normies.
+Simstarr Relay Control is a Windows application that integrates with Elite Dangerous to provide real-world haptic feedback via USB relays. It can trigger fog machines or other devices based on journal updates, enhancing immersion during gameplay. 
+
+The Simstarr is an advanced motion simulator platform with special needs, so this program can separate game and hardware features of the app to multiple computers. Stand Alone mode will be most useful to you normies.
 
 ## What It Does
 - Watches the Elite Dangerous journal file for heat warnings / heat damage.
