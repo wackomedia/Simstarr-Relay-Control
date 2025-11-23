@@ -1,6 +1,9 @@
 # Simstarr Relay Control
 
-<img width="775" height="524" alt="simstarr realay control thumb" src="https://github.com/user-attachments/assets/a7c07eeb-4e25-47d4-893e-26aff64d4d23" />
+<p align="center">
+  <img width="388" height="262" alt="simstarr relay control thumb" src="https://github.com/user-attachments/assets/a7c07eeb-4e25-47d4-893e-26aff64d4d23" />
+</p>
+
 
 Simstarr Relay Control is a Windows application that integrates with Elite Dangerous to provide real-world haptic feedback using USB relays. It can trigger fog machines and other haptics based on journal updates, enhancing immersion during gameplay.
 
