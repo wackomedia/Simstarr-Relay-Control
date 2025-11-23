@@ -30,3 +30,10 @@ Ctrl+Alt+5  Start / Stop application
 
 ## Disclaimer
 This app is open source, feel free to modify it for your own needs. It was built in Visual Studio with Copilot AI.
+
+## Hardware 
+This has been confirmed to work on a “SainSmart USB 4-Channel Relay Automation (5V)” purchased on Amazon. It should also work with other variants that use similar architecture but this is untested.
+
+<img width="250" height="250" alt="image" src="https://github.com/user-attachments/assets/2b448c9e-16e8-4b8c-9c03-5e808d2e6fca" />
+
+It's important to bridge the R20 jumper so the relays get power from the usb port, also note it does not come with a USB cable. 
