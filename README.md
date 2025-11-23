@@ -1,11 +1,12 @@
 # Simstarr Relay Control
 
-<img width="1550" height="1047" alt="simstarr realay control thumb" src="https://github.com/user-attachments/assets/a7c07eeb-4e25-47d4-893e-26aff64d4d23" />
+<img width="775" height="524" alt="simstarr realay control thumb" src="https://github.com/user-attachments/assets/a7c07eeb-4e25-47d4-893e-26aff64d4d23" />
 
+Simstarr Relay Control is a Windows application that integrates with Elite Dangerous to provide real-world haptic feedback using USB relays. It can trigger fog machines and other haptics based on journal updates, enhancing immersion during gameplay.
 
-Simstarr Relay Control is a Windows application that integrates with Elite Dangerous to provide real-world haptic feedback via USB relays. It can trigger fog machines or other devices based on journal updates, enhancing immersion during gameplay. 
+The program is designed so its features can be distributed across multiple computers. This is because The Simstarr is a custom-built motion simulator platform with specialized requirements that most users will never encounter.
 
-The Simstarr is an advanced motion simulator platform with special needs, so this program can separate game and hardware features of the app to multiple computers. Stand Alone mode will be most useful to you normies.
+Stand-Alone Mode will be the most useful for Elite Dangerous players, while Relay PC Mode by itself will be ideal for users who want a simple way to control the status of their hardware for unrelated purposes and don't need to access the game's log file. 
 
 ## What It Does
 - Watches the Elite Dangerous journal file for heat warnings / heat damage.
@@ -36,4 +37,4 @@ This has been confirmed to work on a “SainSmart USB 4-Channel Relay Automation
 
 <img width="250" height="250" alt="image" src="https://github.com/user-attachments/assets/2b448c9e-16e8-4b8c-9c03-5e808d2e6fca" />
 
-It's important to bridge the R20 jumper so the relays get power from the usb port, also note it does not come with a USB cable. 
+It's important to bridge the R20 jumper so the relays get power from the usb port, also note it does not come with a USB cable, ordering that at the same time is recommended. 
