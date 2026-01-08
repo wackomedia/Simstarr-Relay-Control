@@ -17,20 +17,14 @@ using System.Text.Json;
 
 public class MainForm : Form
 {
-    private readonly TextBox txtJournalPath;
-    private readonly Button btnBrowse;
+    private readonly Button btnSettings;
     private readonly Button btnStartStop;
     private readonly TextBox txtLog;
-    private readonly Button btnFog3;
-    private readonly Button btnFog5;
+    private readonly Button btnR1;
     private readonly Button btnR2;
     private readonly Button btnR3;
     private readonly Button btnR4;
-    private readonly FlowLayoutPanel pnlMode;
-    private readonly ComboBox cmbMode;
-    private readonly TextBox txtRelayAddress;
-    private readonly TextBox txtAuthToken;
-    private readonly Label lblRelayDisplay;
+    private readonly Label lblInfo; // shows summary of current settings
 
     private enum AppMode { Relay, Game, StandAlone }
     private AppMode _mode = AppMode.StandAlone;
@@ -46,9 +40,8 @@ public class MainForm : Form
 
     private readonly object _activationLock = new object();
     private readonly TimeSpan ActivationCooldown = TimeSpan.FromSeconds(5);
-    private DateTime _lastActivationUtc = DateTime.MinValue;
+    private readonly DateTime[] _lastActivationUtc = new DateTime[4] { DateTime.MinValue, DateTime.MinValue, DateTime.MinValue, DateTime.MinValue };
 
-    private const int FogRelayIndex = 0;
     private readonly bool[] _relayStates = new bool[4];
 
     private readonly Color EdBackground = Color.FromArgb(10, 10, 12);
@@ -57,7 +50,22 @@ public class MainForm : Form
     private readonly Color EdText = Color.FromArgb(230, 230, 230);
     private readonly Color EdBlue = Color.FromArgb(0, 174, 239);
 
+    // Visual countdown tokens / locks per relay
+    private readonly CancellationTokenSource?[] _relayVisualCts = new CancellationTokenSource?[4];
+    private readonly object[] _relayVisualLocks = new object[4];
+
     private CancellationTokenSource? _fogActiveCts;
+
+    // UI scale factor derived at runtime from device DPI (96 = 100%)
+    private readonly float _uiScale;
+
+#if EMBED_HTTP_SERVER
+    // Embedded server fields only present when feature enabled
+    private Microsoft.AspNetCore.Builder.WebApplication? _embeddedApp;
+    private Task? _embeddedAppTask;
+#endif
+
+    private int S(int px) => (int)Math.Round(px * _uiScale);
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
@@ -68,8 +76,8 @@ public class MainForm : Form
     private const uint MOD_ALT = 0x0001;
     private const uint MOD_CONTROL = 0x0002;
 
-    private const int HOT_R1_3 = 1;
-    private const int HOT_R1_5 = 2;
+    private const int HOT_R1_SHORT = 1;
+    private const int HOT_R1_LONG = 2;
     private const int HOT_R2_TOGGLE = 3;
     private const int HOT_R3_TOGGLE = 4;
     private const int HOT_R4_TOGGLE = 5;
@@ -77,10 +85,25 @@ public class MainForm : Form
 
     public MainForm()
     {
+        // Compute UI scale from current device DPI (fallback to 1.0)
+        float dpi = 96f;
+        try
+        {
+            using (var g = CreateGraphics())
+            {
+                dpi = g.DpiX;
+            }
+        }
+        catch { dpi = 96f; }
+        _uiScale = Math.Max(0.5f, dpi / 96f);
+
+        // Let WinForms perform DPI-aware autoscaling
+        AutoScaleMode = AutoScaleMode.Dpi;
+
         Text = "Simstarr Relay Control";
-        Width = 900;
-        Height = 600;
-        MinimumSize = new Size(700, 420);
+        Width = S(900);
+        Height = S(600);
+        MinimumSize = new Size(S(700), S(420));
 
         BackColor = EdBackground;
         ForeColor = EdText;
@@ -90,7 +113,7 @@ public class MainForm : Form
             Dock = DockStyle.Top,
             ColumnCount = 9,
             RowCount = 2,
-            Padding = new Padding(8),
+            Padding = new Padding(S(8)),
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             GrowStyle = TableLayoutPanelGrowStyle.FixedSize,
@@ -104,186 +127,115 @@ public class MainForm : Form
         topLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         topLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-        pnlMode = new FlowLayoutPanel
+        // Settings button (opens settings dialog). Keep as easy-access.
+        btnSettings = new Button
         {
-            FlowDirection = FlowDirection.TopDown,
-            AutoSize = true,
-            BackColor = EdPanel,
-            Margin = new Padding(0, 4, 8, 4)
-        };
-
-        cmbMode = new ComboBox
-        {
-            DropDownStyle = ComboBoxStyle.DropDownList,
-            Width = 160,
-            BackColor = EdPanel,
-            ForeColor = EdText,
-            FlatStyle = FlatStyle.Flat,
-            Margin = new Padding(0, 2, 0, 2)
-        };
-        cmbMode.Items.AddRange(new object[] { "Stand Alone", "Relay PC", "Game PC" });
-        cmbMode.SelectedIndex = 0;
-        cmbMode.SelectedIndexChanged += (s, e) =>
-        {
-            switch (cmbMode.SelectedIndex)
-            {
-                case 0: SetMode(AppMode.StandAlone); break;
-                case 1: SetMode(AppMode.Relay); break;
-                case 2: SetMode(AppMode.Game); break;
-            }
-        };
-
-        var lblRelayHint = new Label
-        {
-            Text = "Relay host (host:port or http://host:port):",
-            AutoSize = true,
-            ForeColor = EdText,
-            BackColor = EdPanel,
-            Margin = new Padding(0, 6, 0, 0)
-        };
-
-        txtRelayAddress = new TextBox
-        {
-            Text = string.Empty,
-            Width = 160,
-            BackColor = EdPanel,
-            ForeColor = EdText,
-            BorderStyle = BorderStyle.FixedSingle,
-            Margin = new Padding(0, 2, 0, 2)
-        };
-
-        txtAuthToken = new TextBox
-        {
-            Text = string.Empty,
-            Width = 160,
-            BackColor = EdPanel,
-            ForeColor = EdText,
-            BorderStyle = BorderStyle.FixedSingle,
-            Margin = new Padding(0, 2, 0, 2)
-        };
-
-        lblRelayDisplay = new Label
-        {
-            Text = "Relay Endpoint: (none)",
-            AutoSize = true,
-            ForeColor = EdBlue,
-            BackColor = EdPanel,
-            Margin = new Padding(0, 4, 0, 0)
-        };
-
-        pnlMode.Controls.Add(cmbMode);
-        pnlMode.Controls.Add(lblRelayHint);
-        pnlMode.Controls.Add(txtRelayAddress);
-        pnlMode.Controls.Add(txtAuthToken);
-        pnlMode.Controls.Add(lblRelayDisplay);
-
-        var authTip = new ToolTip { IsBalloon = false, ShowAlways = true };
-        authTip.SetToolTip(txtAuthToken, "Optional auth token sent as 'X-Auth-Token' header to the relay server. Leave empty if the relay does not require authentication.");
-
-        txtJournalPath = new TextBox
-        {
-            Dock = DockStyle.Fill,
-            Margin = new Padding(0, 6, 8, 6),
-            BackColor = EdPanel,
-            ForeColor = EdText,
-            BorderStyle = BorderStyle.FixedSingle
-        };
-
-        btnBrowse = new Button
-        {
-            Text = "Browse...",
-            AutoSize = true,
-            Margin = new Padding(0, 4, 8, 4),
-            Padding = new Padding(6, 4, 6, 4),
+            Text = "SETTINGS...",
+            AutoSize = false,
+            Size = new Size(S(110), S(44)), // fixed size so content changes don't resize layout
+            Margin = new Padding(0, S(4), S(8), S(4)),
+            Padding = new Padding(S(6), S(4), S(6), S(4)),
             FlatStyle = FlatStyle.Flat,
             BackColor = EdPanel,
             ForeColor = EdOrange
         };
-        btnBrowse.FlatAppearance.BorderColor = EdOrange;
+        btnSettings.FlatAppearance.BorderColor = EdOrange;
+        btnSettings.Click += BtnSettings_Click;
+
+        // Info label takes the large center column: shows current relay endpoint and journal path summary.
+        lblInfo = new Label
+        {
+            Text = string.Empty,
+            Dock = DockStyle.Fill,
+            AutoSize = false,
+            ForeColor = EdBlue,
+            BackColor = EdPanel,
+            Margin = new Padding(0, S(6), S(8), S(6))
+        };
 
         btnStartStop = new Button
         {
-            Text = "Start",
-            AutoSize = true,
-            Margin = new Padding(0, 4, 8, 4),
-            Padding = new Padding(8, 4, 8, 4),
+            Text = "START",
+            AutoSize = false,
+            Size = new Size(S(110), S(44)),
+            Margin = new Padding(0, S(4), S(8), S(4)),
+            Padding = new Padding(S(8), S(4), S(8), S(4)),
             FlatStyle = FlatStyle.Flat,
             BackColor = EdPanel,
             ForeColor = EdOrange
         };
         btnStartStop.FlatAppearance.BorderColor = EdOrange;
 
-        btnFog3 = new Button
+        // Relay 1 - 4 buttons (toggle) — fixed, identical sizes so changing text doesn't reflow layout
+        var relayBtnSize = new Size(S(160), S(44));
+        btnR1 = new Button
         {
-            Text = "R1 Fog 3s",
-            AutoSize = true,
-            Margin = new Padding(0, 4, 8, 4),
-            Padding = new Padding(6, 4, 6, 4),
+            Text = "RLY1: OFF",
+            AutoSize = false,
+            Size = relayBtnSize,
+            Margin = new Padding(0, S(4), S(8), S(4)),
+            Padding = new Padding(S(6), S(4), S(6), S(4)),
             FlatStyle = FlatStyle.Flat,
             BackColor = EdPanel,
-            ForeColor = EdOrange
+            ForeColor = EdOrange,
+            TextAlign = ContentAlignment.MiddleCenter
         };
-        btnFog3.FlatAppearance.BorderColor = EdOrange;
-
-        btnFog5 = new Button
-        {
-            Text = "R1 Fog 5s",
-            AutoSize = true,
-            Margin = new Padding(0, 4, 8, 4),
-            Padding = new Padding(6, 4, 6, 4),
-            FlatStyle = FlatStyle.Flat,
-            BackColor = EdPanel,
-            ForeColor = EdOrange
-        };
-        btnFog5.FlatAppearance.BorderColor = EdOrange;
+        btnR1.FlatAppearance.BorderColor = EdOrange;
 
         btnR2 = new Button
         {
-            Text = "R2: OFF",
-            AutoSize = true,
-            Margin = new Padding(0, 4, 8, 4),
-            Padding = new Padding(6, 4, 6, 4),
+            Text = "RLY2: OFF",
+            AutoSize = false,
+            Size = relayBtnSize,
+            Margin = new Padding(0, S(4), S(8), S(4)),
+            Padding = new Padding(S(6), S(4), S(6), S(4)),
             FlatStyle = FlatStyle.Flat,
             BackColor = EdPanel,
-            ForeColor = EdOrange
+            ForeColor = EdOrange,
+            TextAlign = ContentAlignment.MiddleCenter
         };
         btnR2.FlatAppearance.BorderColor = EdOrange;
 
         btnR3 = new Button
         {
-            Text = "R3: OFF",
-            AutoSize = true,
-            Margin = new Padding(0, 4, 8, 4),
-            Padding = new Padding(6, 4, 6, 4),
+            Text = "RLY3: OFF",
+            AutoSize = false,
+            Size = relayBtnSize,
+            Margin = new Padding(0, S(4), S(8), S(4)),
+            Padding = new Padding(S(6), S(4), S(6), S(4)),
             FlatStyle = FlatStyle.Flat,
             BackColor = EdPanel,
-            ForeColor = EdOrange
+            ForeColor = EdOrange,
+            TextAlign = ContentAlignment.MiddleCenter
         };
         btnR3.FlatAppearance.BorderColor = EdOrange;
 
         btnR4 = new Button
         {
-            Text = "R4: OFF",
-            AutoSize = true,
-            Margin = new Padding(0, 4, 0, 4),
-            Padding = new Padding(6, 4, 6, 4),
+            Text = "RLY4: OFF",
+            AutoSize = false,
+            Size = relayBtnSize,
+            Margin = new Padding(0, S(4), 0, S(4)),
+            Padding = new Padding(S(6), S(4), S(6), S(4)),
             FlatStyle = FlatStyle.Flat,
             BackColor = EdPanel,
-            ForeColor = EdOrange
+            ForeColor = EdOrange,
+            TextAlign = ContentAlignment.MiddleCenter
         };
         btnR4.FlatAppearance.BorderColor = EdOrange;
 
-        topLayout.Controls.Add(pnlMode, 0, 0);
-        topLayout.SetRowSpan(pnlMode, 2);
-        topLayout.Controls.Add(txtJournalPath, 1, 0);
-        topLayout.SetRowSpan(txtJournalPath, 2);
-        topLayout.Controls.Add(btnBrowse, 2, 0);
-        topLayout.Controls.Add(btnStartStop, 3, 0);
-        topLayout.Controls.Add(btnFog3, 4, 0);
-        topLayout.Controls.Add(btnFog5, 5, 0);
-        topLayout.Controls.Add(btnR2, 2, 1);
-        topLayout.Controls.Add(btnR3, 3, 1);
-        topLayout.Controls.Add(btnR4, 4, 1);
+        // Place controls in layout.
+        topLayout.Controls.Add(btnSettings, 0, 0);
+        topLayout.SetRowSpan(btnSettings, 2);
+        topLayout.Controls.Add(lblInfo, 1, 0);
+        topLayout.SetRowSpan(lblInfo, 2);
+
+        // Place Start/Stop and Relay buttons across the top row
+        topLayout.Controls.Add(btnStartStop, 2, 0);
+        topLayout.Controls.Add(btnR1, 3, 0);
+        topLayout.Controls.Add(btnR2, 4, 0);
+        topLayout.Controls.Add(btnR3, 5, 0);
+        topLayout.Controls.Add(btnR4, 6, 0);
 
         txtLog = new TextBox
         {
@@ -291,7 +243,7 @@ public class MainForm : Form
             ReadOnly = true,
             ScrollBars = ScrollBars.Vertical,
             Dock = DockStyle.Fill,
-            Font = new Font("Consolas", 10),
+            Font = new Font("Consolas", 10f * _uiScale),
             BackColor = EdBackground,
             ForeColor = EdOrange,
             BorderStyle = BorderStyle.FixedSingle
@@ -299,67 +251,91 @@ public class MainForm : Form
         Controls.Add(txtLog);
         Controls.Add(topLayout);
 
-        // Load saved values
-        txtJournalPath.Text = Settings.Default.JournalPath ?? string.Empty;
-        txtRelayAddress.Text = Settings.Default.RelayAddress ?? string.Empty;
-
+        // Load saved values into local UI
         _mode = Settings.Default.AppMode switch
         {
             "Relay" => AppMode.Relay,
             "Game" => AppMode.Game,
             _ => AppMode.StandAlone
         };
-        cmbMode.SelectedIndex = _mode switch
-        {
-            AppMode.StandAlone => 0,
-            AppMode.Relay => 1,
-            AppMode.Game => 2,
-            _ => 0
-        };
 
-        SetMode(_mode); // also updates relay display
+        UpdateInfoDisplay();
 
-        btnBrowse.Click += BtnBrowse_Click;
         btnStartStop.Click += BtnStartStop_Click;
-        btnFog3.Click += (s, e) => OnManualFogClicked(FogRelayIndex, 3000);
-        btnFog5.Click += (s, e) => OnManualFogClicked(FogRelayIndex, 5000);
+        btnR1.Click += (s, e) => ToggleRelay(0);
         btnR2.Click += (s, e) => ToggleRelay(1);
         btnR3.Click += (s, e) => ToggleRelay(2);
         btnR4.Click += (s, e) => ToggleRelay(3);
 
-        txtRelayAddress.Leave += (s, e) =>
-        {
-            var raw = txtRelayAddress.Text.Trim();
-            var norm = NormalizeRelayAddress(raw);
-            // If user omitted http, we add it and show the updated value.
-            if (!string.Equals(raw, norm, StringComparison.Ordinal))
-                txtRelayAddress.Text = norm;
-
-            if (Settings.Default.RelayAddress != norm)
-            {
-                Settings.Default.RelayAddress = norm;
-                Settings.Default.Save();
-                AppendLog("Relay address saved (normalized).");
-            }
-            UpdateRelayDisplay();
-        };
-
         FormClosing += MainForm_FormClosing;
 
-        pnlMode.TabIndex = 0;
-        cmbMode.TabIndex = 0;
-        txtRelayAddress.TabIndex = 1;
-        txtAuthToken.TabIndex = 2;
-        btnBrowse.TabIndex = 3;
-        txtJournalPath.TabIndex = 4;
-        btnStartStop.TabIndex = 5;
-        btnFog3.TabIndex = 6;
-        btnFog5.TabIndex = 7;
-        btnR2.TabIndex = 8;
-        btnR3.TabIndex = 9;
-        btnR4.TabIndex = 10;
+        btnSettings.TabIndex = 0;
+        btnStartStop.TabIndex = 1;
+        btnR1.TabIndex = 2;
+        btnR2.TabIndex = 3;
+        btnR3.TabIndex = 4;
+        btnR4.TabIndex = 5;
+
+        // initialize per-relay visual locks
+        for (int i = 0; i < 4; i++) _relayVisualLocks[i] = new object();
 
         SetManualButtonsEnabled(false);
+    }
+
+    private void BtnSettings_Click(object? sender, EventArgs e)
+    {
+        using var dlg = new SettingsForm();
+        if (dlg.ShowDialog(this) == DialogResult.OK)
+        {
+            // Apply any changed settings
+            UpdateInfoDisplay();
+            AppendLog("Settings updated.");
+        }
+    }
+
+    private void UpdateInfoDisplay()
+    {
+        try
+        {
+            var journal = string.IsNullOrEmpty(Settings.Default.JournalPath) ? "(no journal folder)" : Settings.Default.JournalPath;
+
+            switch (_mode)
+            {
+                case AppMode.StandAlone:
+                    // Stand Alone uses local hardware — do not try to show or contact a remote relay endpoint.
+                    lblInfo.Text = $"Mode: Stand Alone\nRelay: Local hardware\nJournal: {journal}";
+                    break;
+
+                case AppMode.Relay:
+                    // Relay PC hosts the hardware. Show local IPs so a Game PC can connect to this machine.
+                    var localIps = GetLocalIpv4();
+                    var ipsText = localIps.Length == 0 ? "(no IPv4 addresses found)" : string.Join(", ", localIps);
+                    var primaryIp = GetPrimaryIpv4() ?? "(unknown)";
+                    lblInfo.Text = $"Mode: Relay PC\nLocal IPs: {ipsText}\nPrimary IP: {primaryIp}\nJournal: {journal}";
+                    break;
+
+                default: // AppMode.Game
+                    // Game PC mode uses a configured relay endpoint — show the normalized endpoint if present.
+                    var norm = NormalizeRelayAddress(Settings.Default.RelayAddress);
+                    if (string.IsNullOrEmpty(norm))
+                    {
+                        lblInfo.Text = $"Mode: Game PC\nRelay Endpoint: (none)\nJournal: {journal}";
+                    }
+                    else
+                    {
+                        var plain = norm.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                            ? norm.Substring("http://".Length)
+                            : (norm.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ? norm.Substring("https://".Length) : norm);
+
+                        lblInfo.Text = $"Mode: Game PC\nRelay Endpoint: {norm}\nGame PC can enter: {plain}\nJournal: {journal}";
+                    }
+                    break;
+            }
+        }
+        catch
+        {
+            lblInfo.Text = "Settings summary";
+        }
     }
 
     private void SetMode(AppMode mode)
@@ -380,11 +356,7 @@ public class MainForm : Form
             AppMode.StandAlone => "Mode: Stand Alone",
             _ => "Mode changed"
         });
-        cmbMode.Enabled = !(_running);
         SetManualButtonsEnabled(_running && (_mode == AppMode.Relay || _mode == AppMode.StandAlone));
-        txtJournalPath.Enabled = _mode != AppMode.Relay;
-        btnBrowse.Enabled = _mode != AppMode.Relay;
-        UpdateRelayDisplay();
     }
 
     private string NormalizeRelayAddress(string raw)
@@ -420,12 +392,11 @@ public class MainForm : Form
                 .Where(i => i.AddressFamily == AddressFamily.InterNetwork)
                 .Select(i => i.ToString())
                 .Where(ip =>
-                    !ip.StartsWith("127.") &&              // skip loopback
-                    !ip.StartsWith("169.254.") &&          // skip APIPA
+                    !ip.StartsWith("127.") &&
+                    !ip.StartsWith("169.254.") &&
                     ip != "0.0.0.0")
                 .OrderBy(ip =>
                 {
-                    // Prefer typical LAN ranges
                     if (ip.StartsWith("192.168.")) return 0;
                     if (ip.StartsWith("10.")) return 1;
                     if (ip.StartsWith("172.")) return 2;
@@ -436,141 +407,238 @@ public class MainForm : Form
         catch { return null; }
     }
 
-    private void UpdateRelayDisplay()
-    {
-        if (_mode == AppMode.Relay)
-        {
-#if EMBED_HTTP_SERVER
-            var primary = GetPrimaryIpv4();
-            var ips = GetLocalIpv4();
-            var list = ips.Length == 0 ? "(no IPv4)" : string.Join(", ", ips);
-            if (primary != null)
-            {
-                // Show EXACT string the Game PC should type (no http) plus full URL variant.
-                lblRelayDisplay.Text =
-                    $"Relay Mode: Listening on port 5000\n" +
-                    $"Game PC enter: {primary}:5000\n" +
-                    $"(Full URL if needed: http://{primary}:5000)\n" +
-                    $"All local IPs: {list}";
-            }
-            else
-            {
-                lblRelayDisplay.Text =
-                    $"Relay Mode: Listening on port 5000\n" +
-                    $"Game PC: (no usable IPv4 detected)\n" +
-                    $"All local IPs: {list}";
-            }
-#else
-            lblRelayDisplay.Text = "Relay Mode: Hardware active.";
-#endif
-            return;
-        }
-
-        var norm = NormalizeRelayAddress(txtRelayAddress.Text);
-        // Write normalized version back so user can copy exact value (removes trailing slash, adds http://).
-        if (!string.Equals(txtRelayAddress.Text, norm, StringComparison.Ordinal))
-            txtRelayAddress.Text = norm;
-
-        // Display both forms: plain host:port (without protocol) and full URL
-        if (string.IsNullOrEmpty(norm))
-        {
-            lblRelayDisplay.Text = "Relay Endpoint: (none)";
-        }
-        else
-        {
-            var plain = norm.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
-                ? norm.Substring("http://".Length)
-                : (norm.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ? norm.Substring("https://".Length) : norm);
-
-            lblRelayDisplay.Text =
-                $"Relay Endpoint: {norm}\n" +
-                $"Game PC can enter: {plain}";
-        }
-    }
-
     private bool IsLocalRelayMode() => _mode == AppMode.Relay || _mode == AppMode.StandAlone;
 
     private void SetManualButtonsEnabled(bool enabled)
     {
-        btnFog3.Enabled = enabled;
-        btnFog5.Enabled = enabled;
+        btnR1.Enabled = enabled;
         btnR2.Enabled = enabled;
         btnR3.Enabled = enabled;
         btnR4.Enabled = enabled;
     }
 
-    private void BtnBrowse_Click(object? sender, EventArgs e)
-    {
-        using var dlg = new FolderBrowserDialog
-        {
-            SelectedPath = txtJournalPath.Text,
-            Description = "Select Elite Dangerous folder containing journal files"
-        };
-        if (dlg.ShowDialog() == DialogResult.OK)
-        {
-            txtJournalPath.Text = dlg.SelectedPath;
-            Settings.Default.JournalPath = dlg.SelectedPath;
-            Settings.Default.Save();
-            AppendLog("Journal path saved.");
-        }
-    }
-
-    private void SetFogActive(int durationMs)
-    {
-        _fogActiveCts?.Cancel();
-        _fogActiveCts?.Dispose();
-        _fogActiveCts = new CancellationTokenSource();
-        var ct = _fogActiveCts.Token;
-
-        void SetOn()
-        {
-            btnFog3.BackColor = EdOrange;
-            btnFog3.ForeColor = EdText;
-            btnFog3.FlatAppearance.BorderColor = Color.FromArgb(200, 110, 0);
-            btnFog5.BackColor = EdOrange;
-            btnFog5.ForeColor = EdText;
-            btnFog5.FlatAppearance.BorderColor = Color.FromArgb(200, 110, 0);
-        }
-        void SetOff()
-        {
-            btnFog3.BackColor = EdPanel;
-            btnFog3.ForeColor = EdOrange;
-            btnFog3.FlatAppearance.BorderColor = EdOrange;
-            btnFog5.BackColor = EdPanel;
-            btnFog5.ForeColor = EdOrange;
-            btnFog5.FlatAppearance.BorderColor = EdOrange;
-        }
-        if (InvokeRequired) BeginInvoke((Action)SetOn); else SetOn();
-        _ = Task.Run(async () =>
-        {
-            try { await Task.Delay(durationMs, ct).ConfigureAwait(false); }
-            catch (TaskCanceledException) { return; }
-            if (ct.IsCancellationRequested) return;
-            if (!IsHandleCreated) return;
-            if (InvokeRequired) BeginInvoke((Action)SetOff); else SetOff();
-        });
-    }
-
-    private async void OnManualFogClicked(int relayIndex, int durationMs)
+    // Per-relay cooldown check. Returns true and records activation time if allowed.
+    private bool TryBeginActivation(int relayIndex, string reason)
     {
         lock (_activationLock)
         {
             var now = DateTime.UtcNow;
-            var elapsed = now - _lastActivationUtc;
+            var elapsed = now - _lastActivationUtc[relayIndex];
             if (elapsed < ActivationCooldown)
             {
                 var remaining = ActivationCooldown - elapsed;
-                AppendLog($"Fog ignored: on cooldown ({remaining.TotalSeconds:F1}s remaining)");
-                return;
+                AppendLog($"{reason} (Relay {relayIndex + 1}) ignored: on cooldown ({remaining.TotalSeconds:F1}s remaining)");
+                return false;
             }
-            _lastActivationUtc = now;
+            _lastActivationUtc[relayIndex] = now;
+            return true;
         }
+    }
+
+    // Backwards-compatible wrapper (defaults to relay 0 visual)
+    private void SetFogActive(int durationMs) => StartRelayVisualCountdown(0, durationMs);
+
+    // Visual countdown + cooldown display for a specific relay button.
+    // - Turns the button blue while the relay is active and shows remaining active seconds.
+    // - After activation ends, shows the global cooldown remaining until next activation is allowed.
+    private async void StartRelayVisualCountdown(int relayIndex, int durationMs)
+    {
+        if (relayIndex < 0 || relayIndex > 3) relayIndex = 0;
+
+        // Acquire per-relay cancellation token
+        CancellationTokenSource? cts;
+        lock (_relayVisualLocks[relayIndex])
+        {
+            try { _relayVisualCts[relayIndex]?.Cancel(); } catch { }
+            try { _relayVisualCts[relayIndex]?.Dispose(); } catch { }
+            _relayVisualCts[relayIndex] = new CancellationTokenSource();
+            cts = _relayVisualCts[relayIndex];
+        }
+
+        if (cts == null) return;
+        var ct = cts.Token;
+        Button btn = relayIndex switch { 0 => btnR1, 1 => btnR2, 2 => btnR3, 3 => btnR4, _ => btnR1 };
+
+        void UpdateUi(string text, Color back, Color fore)
+        {
+            if (IsHandleCreated)
+            {
+                if (InvokeRequired) BeginInvoke((Action)(() =>
+                {
+                    btn.Text = text;
+                    btn.BackColor = back;
+                    btn.ForeColor = fore;
+                }));
+                else
+                {
+                    btn.Text = text;
+                    btn.BackColor = back;
+                    btn.ForeColor = fore;
+                }
+            }
+        }
+
+        try
+        {
+            lock (_activationLock)
+            {
+                _relayStates[relayIndex] = true;
+            }
+            if (IsHandleCreated)
+            {
+                if (InvokeRequired) BeginInvoke((Action)(() => UpdateRelayButtonVisual(relayIndex, true)));
+                else UpdateRelayButtonVisual(relayIndex, true);
+            }
+
+            // Activation countdown (show whole seconds, uppercase)
+            var activationEnd = DateTime.UtcNow + TimeSpan.FromMilliseconds(durationMs);
+            while (true)
+            {
+                ct.ThrowIfCancellationRequested();
+                var remain = activationEnd - DateTime.UtcNow;
+                if (remain <= TimeSpan.Zero) break;
+                var seconds = Math.Max(0, (int)Math.Ceiling(remain.TotalSeconds));
+                UpdateUi($"RLY{relayIndex + 1}: {seconds}s".ToUpperInvariant(), EdBlue, Color.Black);
+                await Task.Delay(200, ct).ConfigureAwait(false);
+            }
+
+            // After activation expires (or was cancelled), turn OFF the relay hardware
+            var isOn = false;
+            lock (_activationLock)
+            {
+                _relayStates[relayIndex] = isOn;
+            }
+            
+            // Turn off the hardware relay if in local mode
+            if (IsLocalRelayMode() && _relays != null)
+            {
+                try
+                {
+                    _relays.SetRelay(relayIndex, false);
+                }
+                catch (Exception ex)
+                {
+                    AppendLog($"Failed to turn off relay {relayIndex + 1}: {ex.Message}");
+                }
+            }
+            
+            UpdateUi($"RLY{relayIndex + 1}: {(isOn ? "ON" : "OFF")}".ToUpperInvariant(), EdPanel, isOn ? EdOrange : EdText);
+
+            // Reset the cooldown timer so it starts from when the relay actually turns off
+            lock (_activationLock)
+            {
+                _lastActivationUtc[relayIndex] = DateTime.UtcNow;
+            }
+
+            // Show per-relay cooldown remaining (based on Settings value) — whole seconds, grey font
+            var cooldownMs = Settings.Default.ActivationCooldownMs;
+            var cooldownEnd = DateTime.UtcNow + TimeSpan.FromMilliseconds(cooldownMs);
+            while (true)
+            {
+                ct.ThrowIfCancellationRequested();
+                var rem = cooldownEnd - DateTime.UtcNow;
+                if (rem <= TimeSpan.Zero) break;
+                var csecs = Math.Max(0, (int)Math.Ceiling(rem.TotalSeconds));
+                UpdateUi($"RLY{relayIndex + 1}: CDWN {csecs}s".ToUpperInvariant(), EdPanel, Color.Gray);
+                await Task.Delay(200, ct).ConfigureAwait(false);
+            }
+
+            // Final restore
+            if (IsHandleCreated)
+            {
+                if (InvokeRequired) BeginInvoke((Action)(() => UpdateRelayButtonVisual(relayIndex, isOn)));
+                else UpdateRelayButtonVisual(relayIndex, isOn);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Button was clicked during countdown — skip directly to cooldown
+            var isOn = false;
+            lock (_activationLock)
+            {
+                _relayStates[relayIndex] = isOn;
+            }
+            
+            // Turn off the hardware relay immediately
+            if (IsLocalRelayMode() && _relays != null)
+            {
+                try
+                {
+                    _relays.SetRelay(relayIndex, false);
+                }
+                catch (Exception ex)
+                {
+                    AppendLog($"Failed to turn off relay {relayIndex + 1}: {ex.Message}");
+                }
+            }
+            
+            UpdateUi($"RLY{relayIndex + 1}: {(isOn ? "ON" : "OFF")}".ToUpperInvariant(), EdPanel, isOn ? EdOrange : EdText);
+
+            // Reset cooldown timer
+            lock (_activationLock)
+            {
+                _lastActivationUtc[relayIndex] = DateTime.UtcNow;
+            }
+
+            // Show cooldown immediately
+            try
+            {
+                var cooldownMs = Settings.Default.ActivationCooldownMs;
+                var cooldownEnd = DateTime.UtcNow + TimeSpan.FromMilliseconds(cooldownMs);
+                while (true)
+                {
+                    var rem = cooldownEnd - DateTime.UtcNow;
+                    if (rem <= TimeSpan.Zero) break;
+                    var csecs = Math.Max(0, (int)Math.Ceiling(rem.TotalSeconds));
+                    UpdateUi($"RLY{relayIndex + 1}: CDWN {csecs}s".ToUpperInvariant(), EdPanel, Color.Gray);
+                    await Task.Delay(200, CancellationToken.None).ConfigureAwait(false);
+                }
+                
+                // Final restore
+                if (IsHandleCreated)
+                {
+                    if (InvokeRequired) BeginInvoke((Action)(() => UpdateRelayButtonVisual(relayIndex, isOn)));
+                    else UpdateRelayButtonVisual(relayIndex, isOn);
+                }
+            }
+            catch { }
+        }
+        catch (Exception) { }
+        finally
+        {
+            lock (_relayVisualLocks[relayIndex])
+            {
+                try { _relayVisualCts[relayIndex]?.Dispose(); } catch { }
+                _relayVisualCts[relayIndex] = null;
+            }
+        }
+    }
+
+    private async void OnManualFogClicked(int relayIndex, int durationMs)
+    {
+        if (!TryBeginActivation(relayIndex, "Fog")) return;
 
         if (IsLocalRelayMode())
         {
             if (_relays == null) { AppendLog("Relay not initialized."); return; }
-            SetFogActive(durationMs);
-            AppendLog($"Manual: Relay {relayIndex + 1} Fog {durationMs / 1000}s");
+
+            // Use configured per-relay duration when available
+            var dur = (Settings.Default.RelayActivateMs.Length > relayIndex) ? Settings.Default.RelayActivateMs[relayIndex] : durationMs;
+
+            // Trigger the hardware fog blast so the relay actually turns on and then off.
+            try
+            {
+                _relays.FogBlast(relayIndex, dur);
+            }
+            catch (Exception ex)
+            {
+                AppendLog($"Failed to trigger fog on relay {relayIndex + 1}: {ex.Message}");
+                return;
+            }
+
+            // Start the visual countdown for the user
+            StartRelayVisualCountdown(relayIndex, dur);
+            AppendLog($"Manual: Relay {relayIndex + 1} Fog {dur / 1000}s");
             return;
         }
 
@@ -578,13 +646,18 @@ public class MainForm : Form
         EnsureForwarderCreated();
         if (_forwarder == null) { AppendLog("Forwarder not available."); return; }
 
-        var ok = await _forwarder.SendFogAsync(relayIndex, durationMs).ConfigureAwait(false);
+        bool ok = false;
+        if (_forwarder != null)
+        {
+            ok = await _forwarder.SendFogAsync(relayIndex, durationMs).ConfigureAwait(false);
+        }
+
         if (ok)
         {
             if (IsHandleCreated)
             {
-                if (InvokeRequired) BeginInvoke((Action)(() => SetFogActive(durationMs)));
-                else SetFogActive(durationMs);
+                if (InvokeRequired) BeginInvoke((Action)(() => StartRelayVisualCountdown(relayIndex, durationMs)));
+                else StartRelayVisualCountdown(relayIndex, durationMs);
             }
             AppendLog($"Forwarded: Fog relay {relayIndex + 1} {durationMs / 1000}s");
         }
@@ -593,35 +666,113 @@ public class MainForm : Form
 
     private async void ToggleRelay(int relayIndex)
     {
+        // Toggle remains immediate for turning OFF, but turning ON must respect per-relay cooldown.
         if (IsLocalRelayMode())
         {
             if (_relays == null) { AppendLog("Relay not initialized."); return; }
-            bool newState;
-            lock (_activationLock) { newState = !_relayStates[relayIndex]; _relayStates[relayIndex] = newState; }
+
+            DateTime prevLast = DateTime.MinValue;
+            bool current;
+            lock (_activationLock)
+            {
+                current = _relayStates[relayIndex];
+            }
+            var desiredState = !current;
+
+            // If trying to turn ON, enforce cooldown
+            if (desiredState)
+            {
+                lock (_activationLock) { prevLast = _lastActivationUtc[relayIndex]; } // remember so we can undo if hardware call fails
+                if (!TryBeginActivation(relayIndex, "ManualToggle"))
+                {
+                    // TryBeginActivation already logs the cooldown; leave state unchanged
+                    return;
+                }
+            }
+
             try
             {
-                _relays.SetRelay(relayIndex, newState);
-                UpdateRelayButtonVisual(relayIndex, newState);
-                AppendLog($"Relay {relayIndex + 1} turned {(newState ? "ON" : "OFF")} (local)");
+                // Update local state and hardware
+                lock (_activationLock) { _relayStates[relayIndex] = desiredState; }
+                _relays.SetRelay(relayIndex, desiredState);
+                UpdateRelayButtonVisual(relayIndex, desiredState);
+                AppendLog($"Relay {relayIndex + 1} turned {(desiredState ? "ON" : "OFF")} (local)");
+
+                // If turned ON, start activation visuals (TryBeginActivation already set _lastActivationUtc[relayIndex])
+                if (desiredState)
+                {
+                    var dur = (Settings.Default.RelayActivateMs.Length > relayIndex) ? Settings.Default.RelayActivateMs[relayIndex] : Settings.Default.FogShortMs;
+                    if (IsHandleCreated)
+                    {
+                        if (InvokeRequired) BeginInvoke((Action)(() => StartRelayVisualCountdown(relayIndex, dur)));
+                        else StartRelayVisualCountdown(relayIndex, dur);
+                    }
+                }
             }
-            catch (Exception ex) { AppendLog($"Failed to toggle relay {relayIndex + 1}: {ex.Message}"); }
+            catch (Exception ex)
+            {
+                // Revert local state and cooldown timestamp if hardware call failed after we claimed activation
+                lock (_activationLock)
+                {
+                    _relayStates[relayIndex] = current;
+                    if (desiredState) _lastActivationUtc[relayIndex] = prevLast;
+                }
+                AppendLog($"Failed to toggle relay {relayIndex + 1}: {ex.Message}");
+            }
+
             return;
         }
 
+        // Remote / Game PC handling
         if (!_running) { AppendLog("Not running."); return; }
         EnsureForwarderCreated();
         if (_forwarder == null) { AppendLog("Forwarder not available."); return; }
 
-        bool desiredState = !_relayStates[relayIndex];
-        var ok = await _forwarder.SendSetRelayAsync(relayIndex, desiredState).ConfigureAwait(false);
+        bool prev;
+        lock (_activationLock) { prev = _relayStates[relayIndex]; }
+        bool desired = !prev;
+
+        // enforce cooldown for turning ON
+        DateTime prevLastActivation = DateTime.MinValue;
+        if (desired)
+        {
+            lock (_activationLock) { prevLastActivation = _lastActivationUtc[relayIndex]; }
+            if (!TryBeginActivation(relayIndex, "ManualToggle"))
+            {
+                return;
+            }
+        }
+
+        var ok = await _forwarder.SendSetRelayAsync(relayIndex, desired).ConfigureAwait(false);
         if (ok)
         {
-            lock (_activationLock) { _relayStates[relayIndex] = desiredState; }
-            UpdateRelayButtonVisual(relayIndex, desiredState);
-            AppendLog($"Forwarded: SetRelay {relayIndex + 1} -> {(desiredState ? "ON" : "OFF")}" +
-                $" (relay={_relayStates[relayIndex]})");
+            lock (_activationLock) { _relayStates[relayIndex] = desired; }
+            if (IsHandleCreated)
+            {
+                if (InvokeRequired) BeginInvoke((Action)(() => UpdateRelayButtonVisual(relayIndex, desired)));
+                else UpdateRelayButtonVisual(relayIndex, desired);
+            }
+            AppendLog($"Forwarded: SetRelay {relayIndex + 1} -> {(desired ? "ON" : "OFF")} (relay={_relayStates[relayIndex]})");
+
+            if (desired)
+            {
+                var dur = (Settings.Default.RelayActivateMs.Length > relayIndex) ? Settings.Default.RelayActivateMs[relayIndex] : Settings.Default.FogShortMs;
+                if (IsHandleCreated)
+                {
+                    if (InvokeRequired) BeginInvoke((Action)(() => StartRelayVisualCountdown(relayIndex, dur)));
+                    else StartRelayVisualCountdown(relayIndex, dur);
+                }
+            }
         }
-        else AppendLog($"Forward failed: SetRelay {relayIndex + 1}");
+        else
+        {
+            // revert cooldown timestamp if we claimed it but forward failed
+            if (desired)
+            {
+                lock (_activationLock) { _lastActivationUtc[relayIndex] = prevLastActivation; }
+            }
+            AppendLog($"Forward failed: SetRelay {relayIndex + 1}");
+        }
     }
 
     private void EnsureForwarderCreated()
@@ -629,16 +780,13 @@ public class MainForm : Form
         if (_forwarder != null) return;
         try
         {
-            var addr = txtRelayAddress.Text.Trim();
-            if (string.IsNullOrEmpty(addr)) { UpdateRelayDisplay(); return; }
+            var addr = Settings.Default.RelayAddress?.Trim() ?? string.Empty;
+            if (string.IsNullOrEmpty(addr)) { UpdateInfoDisplay(); return; }
             addr = NormalizeRelayAddress(addr);
-            // Update textbox so user sees the exact normalized form (optional protocol auto-added).
-            if (!string.Equals(txtRelayAddress.Text, addr, StringComparison.Ordinal))
-                txtRelayAddress.Text = addr;
 
-            _forwarder = new EventForwarder(addr, txtAuthToken.Text ?? string.Empty);
+            _forwarder = new EventForwarder(addr, Settings.Default.AuthToken ?? string.Empty);
             AppendLog($"Forwarder created for {addr}");
-            UpdateRelayDisplay();
+            UpdateInfoDisplay();
             _ = Task.Run(async () =>
             {
                 try
@@ -653,7 +801,7 @@ public class MainForm : Form
         {
             AppendLog($"Failed to create forwarder: {ex.Message}");
             _forwarder = null;
-            UpdateRelayDisplay();
+            UpdateInfoDisplay();
         }
     }
 
@@ -661,18 +809,8 @@ public class MainForm : Form
     {
         if (!_running)
         {
-            // Persist relay address when starting
-            var currentRelay = txtRelayAddress.Text.Trim();
-            if (Settings.Default.RelayAddress != currentRelay)
-            {
-                Settings.Default.RelayAddress = currentRelay;
-                Settings.Default.Save();
-                AppendLog("Relay address saved (on start).");
-            }
-
             if (_mode == AppMode.Relay)
             {
-                // Relay hardware only: DO NOT create or use JournalWatcher.
                 _forwarder?.Dispose(); _forwarder = null;
                 _relays = new RelayController();
                 AppendLog("Initializing relay (hardware only)...");
@@ -685,14 +823,13 @@ public class MainForm : Form
                 }
 
                 for (int i = 0; i < 4; i++) _relayStates[i] = false;
-                UpdateRelayButtonVisual(1, false); UpdateRelayButtonVisual(2, false); UpdateRelayButtonVisual(3, false);
+                UpdateRelayButtonVisual(0, false); UpdateRelayButtonVisual(1, false); UpdateRelayButtonVisual(2, false); UpdateRelayButtonVisual(3, false);
 
                 _running = true;
                 btnStartStop.Text = "Stop";
                 SetManualButtonsEnabled(true);
 
                 RegisterHotKeys();
-                cmbMode.Enabled = false;
                 AppendLog("Relay hardware initialized (Relay PC). No journal monitoring.");
 #if EMBED_HTTP_SERVER
                 StartEmbeddedServer(5000);
@@ -700,31 +837,62 @@ public class MainForm : Form
             }
             else if (_mode == AppMode.StandAlone)
             {
-                // Stand Alone: local hardware + journal monitoring
                 _forwarder?.Dispose(); _forwarder = null;
                 _relays = new RelayController();
                 AppendLog("Initializing relay...");
                 if (!_relays.Init()) { AppendLog("Relay init failed."); _relays.Dispose(); _relays = null; return; }
 
                 for (int i = 0; i < 4; i++) _relayStates[i] = false;
-                UpdateRelayButtonVisual(1, false); UpdateRelayButtonVisual(2, false); UpdateRelayButtonVisual(3, false);
+                UpdateRelayButtonVisual(0, false); UpdateRelayButtonVisual(1, false); UpdateRelayButtonVisual(2, false); UpdateRelayButtonVisual(3, false);
 
-                _watcher = new JournalWatcher(txtJournalPath.Text);
+                _watcher = new JournalWatcher(Settings.Default.JournalPath);
                 _onDebugLine = s => AppendLog(s);
                 _onHeatWarning = () =>
                 {
                     if (!_running || _relays == null) return;
-                    if (TryActivateFog(FogRelayIndex, 3000, "HeatWarning")) { SetFogActive(3000); AppendLog("HeatWarning triggered fog (3s)"); }
+                    var durations = Settings.Default.RelayActivateMs;
+                    if (TryActivateAllRelays(durations, "HeatWarning")) { AppendLog($"HeatWarning triggered relays"); }
                 };
                 _onHeatDamage = () =>
                 {
                     if (!_running || _relays == null) return;
-                    if (TryActivateFog(FogRelayIndex, 5000, "HeatDamage")) { SetFogActive(5000); AppendLog("HeatDamage triggered fog (5s)"); }
+                    var durations = Settings.Default.RelayActivateMs;
+                    if (TryActivateAllRelays(durations, "HeatDamage")) { AppendLog($"HeatDamage triggered relays"); }
                 };
 
                 _watcher.DebugLine += _onDebugLine;
                 _watcher.HeatWarning += _onHeatWarning;
                 _watcher.HeatDamage += _onHeatDamage;
+                
+                // Subscribe to custom relay events (one per relay)
+                _watcher.CustomRelayEvent += relayIndex =>
+                {
+                    if (!_running || _relays == null) return;
+                    var durations = Settings.Default.RelayActivateMs;
+                    
+                    // Only activate the specific relay that matched the event
+                    if (relayIndex >= 0 && relayIndex < durations.Length)
+                    {
+                        if (TryBeginActivation(relayIndex, "CustomEvent"))
+                        {
+                            try
+                            {
+                                _relays.FogBlast(relayIndex, durations[relayIndex]);
+                                AppendLog($"Custom event triggered Relay {relayIndex + 1}");
+                                var dur = durations[relayIndex];
+                                if (IsHandleCreated)
+                                {
+                                    if (InvokeRequired) BeginInvoke((Action)(() => StartRelayVisualCountdown(relayIndex, dur)));
+                                    else StartRelayVisualCountdown(relayIndex, dur);
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                AppendLog($"Failed to activate relay {relayIndex + 1}: {ex.Message}");
+                            }
+                        }
+                    }
+                };
 
                 _watcher.Start();
                 _running = true;
@@ -733,9 +901,9 @@ public class MainForm : Form
 
                 try
                 {
-                    if (Directory.Exists(txtJournalPath.Text))
+                    if (Directory.Exists(Settings.Default.JournalPath))
                     {
-                        var files = Directory.GetFiles(txtJournalPath.Text, "*.journal*");
+                        var files = Directory.GetFiles(Settings.Default.JournalPath, "*.journal*");
                         if (files.Length > 0)
                         {
                             var latest = files.OrderByDescending(f => File.GetLastWriteTimeUtc(f)).First();
@@ -748,7 +916,6 @@ public class MainForm : Form
                 catch (Exception ex) { AppendLog($"Journal check failed: {ex.Message}"); }
 
                 RegisterHotKeys();
-                cmbMode.Enabled = false;
                 AppendLog("Watcher started (Stand Alone).");
 #if EMBED_HTTP_SERVER
                 StartEmbeddedServer(5000);
@@ -756,51 +923,63 @@ public class MainForm : Form
             }
             else // Game PC
             {
-                _watcher = new JournalWatcher(txtJournalPath.Text);
+                _watcher = new JournalWatcher(Settings.Default.JournalPath);
                 _onDebugLine = s => AppendLog(s);
                 _onHeatWarning = () =>
                 {
                     if (!_running) return;
-                    AppendLog("HeatWarning detected (Game PC)");
-                    EnsureForwarderCreated();
-                    if (_forwarder != null)
+                    // Check all relays for per-relay cooldown before forwarding
+                    var durations = Settings.Default.RelayActivateMs;
+                    _ = Task.Run(async () =>
                     {
-                        _ = _forwarder.SendFogAsync(FogRelayIndex, 3000).ContinueWith(t =>
+                        for (int i = 0; i < durations.Length && i < 4; i++)
                         {
-                            if (t.Result)
+                            if (!TryBeginActivation(i, "HeatWarning")) continue;
+                            AppendLog($"HeatWarning detected - forwarding Relay {i + 1}");
+                            var dur = durations[i];
+                            bool ok = false;
+                            if (_forwarder != null)
+                            {
+                                ok = await _forwarder.SendFogAsync(i, dur).ConfigureAwait(false);
+                            }
+                            if (ok)
                             {
                                 if (IsHandleCreated)
                                 {
-                                    if (InvokeRequired) BeginInvoke((Action)(() => SetFogActive(3000)));
-                                    else SetFogActive(3000);
+                                    if (InvokeRequired) BeginInvoke((Action)(() => StartRelayVisualCountdown(i, dur)));
+                                    else StartRelayVisualCountdown(i, dur);
                                 }
-                                AppendLog("Forwarded: HeatWarning -> Fog 3s");
                             }
-                            else AppendLog("Forward failed: HeatWarning");
-                        }, TaskScheduler.FromCurrentSynchronizationContext());
-                    }
+                        }
+                    });
                 };
                 _onHeatDamage = () =>
                 {
                     if (!_running) return;
-                    AppendLog("HeatDamage detected (Game PC)");
-                    EnsureForwarderCreated();
-                    if (_forwarder != null)
+                    // Check all relays for per-relay cooldown before forwarding
+                    var durations = Settings.Default.RelayActivateMs;
+                    _ = Task.Run(async () =>
                     {
-                        _ = _forwarder.SendFogAsync(FogRelayIndex, 5000).ContinueWith(t =>
+                        for (int i = 0; i < durations.Length && i < 4; i++)
                         {
-                            if (t.Result)
+                            if (!TryBeginActivation(i, "HeatDamage")) continue;
+                            AppendLog($"HeatDamage detected - forwarding Relay {i + 1}");
+                            var dur = durations[i];
+                            bool ok = false;
+                            if (_forwarder != null)
+                            {
+                                ok = await _forwarder.SendFogAsync(i, dur).ConfigureAwait(false);
+                            }
+                            if (ok)
                             {
                                 if (IsHandleCreated)
                                 {
-                                    if (InvokeRequired) BeginInvoke((Action)(() => SetFogActive(5000)));
-                                    else SetFogActive(5000);
+                                    if (InvokeRequired) BeginInvoke((Action)(() => StartRelayVisualCountdown(i, dur)));
+                                    else StartRelayVisualCountdown(i, dur);
                                 }
-                                AppendLog("Forwarded: HeatDamage -> Fog 5s");
                             }
-                            else AppendLog("Forward failed: HeatDamage");
-                        }, TaskScheduler.FromCurrentSynchronizationContext());
-                    }
+                        }
+                    });
                 };
 
                 _watcher.DebugLine += _onDebugLine;
@@ -811,9 +990,7 @@ public class MainForm : Form
                 _watcher.Start();
                 _running = true;
                 btnStartStop.Text = "Stop";
-                btnFog3.Enabled = true; btnFog5.Enabled = true;
-                btnR2.Enabled = true; btnR3.Enabled = true; btnR4.Enabled = true;
-                cmbMode.Enabled = false;
+                SetManualButtonsEnabled(true);
                 AppendLog("Watcher started (Game PC).");
             }
         }
@@ -839,100 +1016,212 @@ public class MainForm : Form
             _forwarder = null;
 #if EMBED_HTTP_SERVER
             _ = StopEmbeddedServerAsync();
+#else
+            _ = StopEmbeddedServerAsync();
 #endif
-            lock (_activationLock) { _lastActivationUtc = DateTime.MinValue; }
+            lock (_activationLock) { for (int i = 0; i < 4; i++) _lastActivationUtc[i] = DateTime.MinValue; }
             for (int i = 0; i < 4; i++) _relayStates[i] = false;
-            UpdateRelayButtonVisual(1, false); UpdateRelayButtonVisual(2, false); UpdateRelayButtonVisual(3, false);
+            UpdateRelayButtonVisual(0, false); UpdateRelayButtonVisual(1, false); UpdateRelayButtonVisual(2, false); UpdateRelayButtonVisual(3, false);
             SetManualButtonsEnabled(false);
             btnStartStop.Text = "Start";
             btnStartStop.Enabled = true;
-            cmbMode.Enabled = true;
             AppendLog("Stopped and all functions cancelled.");
+        }
+    }
+
+    // New helper: try activate all relays locally (uses RelayController.FogBlast per relay)
+    private bool TryActivateAllRelays(int[] durationsMs, string reason)
+    {
+        try
+        {
+            if (_relays == null) { AppendLog("Relay not initialized."); return false; }
+            for (int i = 0; i < durationsMs.Length && i < 4; i++)
+            {
+                // Per-relay cooldown check
+                if (!TryBeginActivation(i, reason)) continue;
+
+                try
+                {
+                    _relays.FogBlast(i, durationsMs[i]);
+                }
+                catch (Exception exInner)
+                {
+                    AppendLog($"Failed to activate relay {i + 1}: {exInner.Message}");
+                }
+            }
+
+            // Visual feedback: start visual countdown for relay 1
+            var r1Dur = durationsMs.Length > 0 ? durationsMs[0] : Settings.Default.FogShortMs;
+            if (IsHandleCreated)
+            {
+                if (InvokeRequired) BeginInvoke((Action)(() => StartRelayVisualCountdown(0, r1Dur)));
+                else StartRelayVisualCountdown(0, r1Dur);
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"Failed to activate relays: {ex.Message}");
+            return false;
+        }
+    }
+
+    // New helper: forward fog activations to remote relay endpoint for all relays
+    private async Task ForwardFogAllAsync(int[] durationsMs, string? reason = null, int relayIndex = 0)
+    {
+        if (_forwarder == null) { AppendLog("Forwarder not available."); return; }
+        if (durationsMs.Length == 0) return;
+
+        try
+        {
+            // fire-and-forget: don't await
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    for (int i = 0; i < durationsMs.Length && i < 4; i++)
+                    {
+                        var dur = durationsMs[i];
+                        var ok = await _forwarder.SendFogAsync(i, dur).ConfigureAwait(false);
+                        if (ok)
+                        {
+                            if (IsHandleCreated)
+                            {
+                                if (InvokeRequired) BeginInvoke((Action)(() => StartRelayVisualCountdown(i, dur)));
+                                else StartRelayVisualCountdown(i, dur);
+                            }
+                            AppendLog($"Forwarded: Fog relay {i + 1} {dur / 1000}s");
+                        }
+                        else AppendLog("Forward failed: Fog");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    AppendLog($"Forward all failed: {ex.Message}");
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"Forward helper failed: {ex.Message}");
+        }
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        base.WndProc(ref m);
+
+        // Hotkey handling: relay-specific actions bypass normal cooldowns
+        if (m.Msg == WM_HOTKEY)
+        {
+            int id = m.WParam.ToInt32();
+            uint mod = (uint)(m.LParam.ToInt32() >> 16);
+            uint vk = (uint)(m.LParam.ToInt32() & 0xFFFF);
+
+            // Log all hotkey triggers (includes modifiers)
+            AppendLog($"Hotkey {id} triggered: mod={mod:X} vk={vk:X}");
+
+            try
+            {
+                // Relay 1..4 toggle (with cooldown bypass)
+                if (id >= HOT_R2_TOGGLE && id <= HOT_R4_TOGGLE)
+                {
+                    int relayIndex = id - HOT_R2_TOGGLE + 1;
+                    ToggleRelay(relayIndex);
+                    return;
+                }
+
+                switch (id)
+                {
+                    case HOT_R1_SHORT:
+                        // Relay 1 short fog (manual, direct to relay)
+                        OnManualFogClicked(0, Settings.Default.FogShortMs);
+                        return;
+
+                    case HOT_R1_LONG:
+                        // Relay 1 long fog (manual, direct to relay)
+                        OnManualFogClicked(0, Settings.Default.FogLongMs);
+                        return;
+
+                    case HOT_STARTSTOP:
+                        btnStartStop.PerformClick();
+                        return;
+
+                    default:
+                        return;
+                }
+            }
+            catch (Exception ex)
+            {
+                AppendLog($"Hotkey action error: {ex.Message}");
+            }
         }
     }
 
     private void RegisterHotKeys()
     {
-        try
+        try { UnregisterHotKeys(); } catch { }
+
+        // Register hotkeys for relays 1-4 (no modifiers, just the keys)
+        for (int i = 0; i < 4; i++)
         {
-            var mods = MOD_CONTROL | MOD_ALT;
-            if (!RegisterHotKey(this.Handle, HOT_R1_3, mods, (uint)Keys.D1)) AppendLog("Failed to register hotkey R1 3s.");
-            if (!RegisterHotKey(this.Handle, HOT_R1_5, mods, (uint)Keys.D6)) AppendLog("Failed to register hotkey R1 5s.");
-            if (!RegisterHotKey(this.Handle, HOT_R2_TOGGLE, mods, (uint)Keys.D2)) AppendLog("Failed to register hotkey R2 toggle.");
-            if (!RegisterHotKey(this.Handle, HOT_R3_TOGGLE, mods, (uint)Keys.D3)) AppendLog("Failed to register hotkey R3 toggle.");
-            if (!RegisterHotKey(this.Handle, HOT_R4_TOGGLE, mods, (uint)Keys.D4)) AppendLog("Failed to register hotkey R4 toggle.");
-            if (!RegisterHotKey(this.Handle, HOT_STARTSTOP, mods, (uint)Keys.D5)) AppendLog("Failed to register hotkey Start/Stop.");
-            AppendLog("Hotkeys registered (Ctrl+Alt+F9/F10/NumPad1-3, Ctrl+Alt+5).");
+            int id = HOT_R2_TOGGLE + i;
+            uint vk = (uint)(Keys.D2 + i);
+            RegisterHotKey(Handle, id, 0, vk);
         }
-        catch (Exception ex) { AppendLog($"RegisterHotKeys error: {ex.Message}"); }
+
+        AppendLog("Hotkeys registered.");
     }
 
     private void UnregisterHotKeys()
     {
-        try
+        // Unregister all hotkeys registered by this form.
+        for (int i = 0; i < 4; i++)
         {
-            UnregisterHotKey(this.Handle, HOT_R1_3);
-            UnregisterHotKey(this.Handle, HOT_R1_5);
-            UnregisterHotKey(this.Handle, HOT_R2_TOGGLE);
-            UnregisterHotKey(this.Handle, HOT_R3_TOGGLE);
-            UnregisterHotKey(this.Handle, HOT_R4_TOGGLE);
-            UnregisterHotKey(this.Handle, HOT_STARTSTOP);
-            AppendLog("Hotkeys unregistered.");
+            int id = HOT_R2_TOGGLE + i;
+            UnregisterHotKey(Handle, id);
         }
-        catch { }
-    }
-
-    private bool TryActivateFog(int relayIndex, int durationMs, string reason)
-    {
-        lock (_activationLock)
-        {
-            var now = DateTime.UtcNow;
-            var elapsed = now - _lastActivationUtc;
-            if (elapsed < ActivationCooldown)
-            {
-                var remaining = ActivationCooldown - elapsed;
-                AppendLog($"{reason} ignored: on cooldown ({remaining.TotalSeconds:F1}s remaining)");
-                return false;
-            }
-            _lastActivationUtc = now;
-        }
-        try { _relays?.FogBlast(relayIndex, durationMs); return true; }
-        catch (Exception ex) { AppendLog($"Failed to activate fog: {ex.Message}"); return false; }
-    }
-
-    protected override void WndProc(ref Message m)
-    {
-        if (m.Msg == WM_HOTKEY)
-        {
-            int id = m.WParam.ToInt32();
-            switch (id)
-            {
-                case HOT_R1_3: if (_running) OnManualFogClicked(FogRelayIndex, 3000); break;
-                case HOT_R1_5: if (_running) OnManualFogClicked(FogRelayIndex, 5000); break;
-                case HOT_R2_TOGGLE: if (_running) ToggleRelay(1); break;
-                case HOT_R3_TOGGLE: if (_running) ToggleRelay(2); break;
-                case HOT_R4_TOGGLE: if (_running) ToggleRelay(3); break;
-                case HOT_STARTSTOP: btnStartStop.PerformClick(); break;
-            }
-        }
-        base.WndProc(ref m);
     }
 
     private void MainForm_FormClosing(object? sender, FormClosingEventArgs e)
     {
-        Settings.Default.JournalPath = txtJournalPath.Text;
-        Settings.Default.RelayAddress = txtRelayAddress.Text.Trim();
-        Settings.Default.Save();
-        UnregisterHotKeys();
-        if (_watcher != null) { _ = _watcher.StopAsync(); _watcher = null; }
-        _relays?.Dispose(); _relays = null;
-        _forwarder?.Dispose(); _forwarder = null;
-        _fogActiveCts?.Cancel(); _fogActiveCts?.Dispose(); _fogActiveCts = null;
+        // Persist settings and clean up resources used by the form.
+        try
+        {
+            Settings.Default.Save();
+        }
+        catch { /* non-fatal */ }
+
+        try { UnregisterHotKeys(); } catch { }
+
+        if (_watcher != null)
+        {
+            try { _ = _watcher.StopAsync(); } catch { }
+            _watcher = null;
+        }
+
+        try { _relays?.Dispose(); } catch { }
+        _relays = null;
+
+        try { _forwarder?.Dispose(); } catch { }
+        _forwarder = null;
+
+        try { _fogActiveCts?.Cancel(); _fogActiveCts?.Dispose(); } catch { }
+        _fogActiveCts = null;
+
+        for (int i = 0; i < _relayVisualCts.Length; i++)
+        {
+            try { _relayVisualCts[i]?.Cancel(); _relayVisualCts[i]?.Dispose(); } catch { }
+            _relayVisualCts[i] = null;
+        }
     }
 
+    // Added missing UI helpers and embedded server wrappers so references compile.
     private void AppendLog(string message)
     {
         if (InvokeRequired) { BeginInvoke(new Action(() => AppendLog(message))); return; }
+        if (txtLog == null) return;
         txtLog.AppendText($"{DateTime.Now:HH:mm:ss} {message}{Environment.NewLine}");
         txtLog.SelectionStart = txtLog.Text.Length;
         txtLog.ScrollToCaret();
@@ -940,30 +1229,32 @@ public class MainForm : Form
 
     private void UpdateRelayButtonVisual(int relayIndex, bool isOn)
     {
-        Button? btn = relayIndex switch { 1 => btnR2, 2 => btnR3, 3 => btnR4, _ => null };
+        Button? btn = relayIndex switch { 0 => btnR1, 1 => btnR2, 2 => btnR3, 3 => btnR4, _ => null };
         if (btn == null) return;
+
+        var text = $"RLY{relayIndex + 1}: {(isOn ? "ON" : "OFF")}";
+        btn.Text = text.ToUpperInvariant();
 
         if (isOn)
         {
-            btn.Text = $"R{relayIndex + 1}: ON";
-            btn.BackColor = EdOrange;
-            btn.ForeColor = EdText;
-            btn.FlatAppearance.BorderColor = Color.FromArgb(200, 110, 0);
+            // ON: panel background, orange text
+            btn.ForeColor = EdOrange;
+            try { btn.FlatAppearance.BorderColor = Color.FromArgb(200, 110, 0); } catch { }
+            btn.BackColor = EdPanel;
         }
         else
         {
-            btn.Text = $"R{relayIndex + 1}: OFF";
-            btn.BackColor = EdPanel;
-            btn.ForeColor = EdOrange;
-            btn.FlatAppearance.BorderColor = EdOrange;
+            // OFF: black text for contrast on orange background
+            btn.ForeColor = Color.Black;
+            try { btn.FlatAppearance.BorderColor = EdOrange; } catch { }
+            btn.BackColor = EdOrange;
         }
     }
 
-#if EMBED_HTTP_SERVER
-    private Microsoft.AspNetCore.Builder.WebApplication? _embeddedApp;
-    private Task? _embeddedAppTask;
+    // Start/Stop embedded server wrappers. Present regardless of build symbol.
     private void StartEmbeddedServer(int port = 5000)
     {
+#if EMBED_HTTP_SERVER
         if (_embeddedApp != null) return;
         var builder = Microsoft.AspNetCore.Builder.WebApplication.CreateBuilder(new Microsoft.AspNetCore.Builder.WebApplicationOptions { Args = Array.Empty<string>() });
         var app = builder.Build();
@@ -990,7 +1281,7 @@ public class MainForm : Form
                     int durationMs = root.TryGetProperty("durationMs", out var dm) && dm.TryGetInt32(out var d) ? d : 1500;
                     if (_relays != null)
                     {
-                        try { _relays.FogBlast(relayIndex, durationMs); SetFogActive(durationMs); res.StatusCode = 200; await res.WriteAsJsonAsync(new { result = "ok", action = "fog", relayIndex, durationMs }).ConfigureAwait(false); }
+                        try { _relays.FogBlast(relayIndex, durationMs); StartRelayVisualCountdown(relayIndex, durationMs); res.StatusCode = 200; await res.WriteAsJsonAsync(new { result = "ok", action = "fog", relayIndex, durationMs }).ConfigureAwait(false); }
                         catch (Exception ex) { res.StatusCode = 500; await res.WriteAsync($"Error: {ex.Message}").ConfigureAwait(false); }
                     }
                     else { res.StatusCode = 200; await res.WriteAsJsonAsync(new { result = "simulated", action = "fog" }).ConfigureAwait(false); }
@@ -1021,10 +1312,14 @@ public class MainForm : Form
             catch (Exception ex) { AppendLog($"Embedded server stopped: {ex.Message}"); }
             finally { _embeddedApp = null; _embeddedAppTask = null; }
         });
+#else
+    AppendLog("Embedded HTTP server is not enabled in this build.");
+#endif
     }
 
     private async Task StopEmbeddedServerAsync()
     {
+#if EMBED_HTTP_SERVER
         if (_embeddedApp == null) return;
         try
         {
@@ -1034,6 +1329,9 @@ public class MainForm : Form
         }
         catch (Exception ex) { AppendLog($"Error stopping embedded server: {ex.Message}"); }
         finally { _embeddedApp = null; _embeddedAppTask = null; }
-    }
+#else
+        AppendLog("Embedded HTTP server is not enabled in this build.");
+        await Task.CompletedTask;
 #endif
+    }
 }

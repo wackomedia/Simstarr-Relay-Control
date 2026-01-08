@@ -4,6 +4,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using RelayTest.Properties;
 
 class JournalWatcher : IDisposable
 {
@@ -13,6 +14,7 @@ class JournalWatcher : IDisposable
 
     public event Action? HeatWarning;
     public event Action? HeatDamage;
+    public event Action<int>? CustomRelayEvent; // New: per-relay event with relay index
     public event Action<string>? DebugLine; // for UI logging
 
     public JournalWatcher(string rootDir)
@@ -81,20 +83,43 @@ class JournalWatcher : IDisposable
                         if (TryGetEventName(doc.RootElement, out string? ev))
                         {
                             DebugLine?.Invoke($"Event: {ev}");
+                            
+                            // Check against hardcoded heat events
                             if (string.Equals(ev, "HeatWarning", StringComparison.OrdinalIgnoreCase))
                                 HeatWarning?.Invoke();
                             else if (string.Equals(ev, "HeatDamage", StringComparison.OrdinalIgnoreCase))
                                 HeatDamage?.Invoke();
+                            else
+                            {
+                                // Check against configured relay event names
+                                var relayEventTypes = Settings.Default.RelayEventTypes;
+                                if (relayEventTypes != null)
+                                {
+                                    for (int i = 0; i < relayEventTypes.Length && i < 4; i++)
+                                    {
+                                        if (!string.IsNullOrEmpty(relayEventTypes[i]) && 
+                                            string.Equals(ev, relayEventTypes[i], StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            // Relay i was configured with this event name
+                                            DebugLine?.Invoke($"Custom event matched: Relay {i + 1} -> {ev}");
+                                            CustomRelayEvent?.Invoke(i); // Fire with specific relay index
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
                         }
                         else
                         {
-                            // optional: emit debug
-                            DebugLine?.Invoke("No event name found in line.");
+                            // Enhanced debug: show first 200 chars of the line and available properties
+                            var root = doc.RootElement;
+                            var props = string.Join(", ", root.EnumerateObject().Select(p => p.Name).Take(10));
+                            DebugLine?.Invoke($"[NO EVENT] Props: {props} | Line start: {line.Substring(0, Math.Min(200, line.Length))}");
                         }
                     }
-                    catch (JsonException)
+                    catch (JsonException ex)
                     {
-                        DebugLine?.Invoke("Invalid JSON line.");
+                        DebugLine?.Invoke($"Invalid JSON line: {ex.Message}");
                     }
                 }
                 catch (OperationCanceledException) { break; }
