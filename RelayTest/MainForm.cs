@@ -356,7 +356,8 @@ public class MainForm : Form
             AppMode.StandAlone => "Mode: Stand Alone",
             _ => "Mode changed"
         });
-        SetManualButtonsEnabled(_running && (_mode == AppMode.Relay || _mode == AppMode.StandAlone));
+        // Enable manual buttons whenever running in any mode
+        SetManualButtonsEnabled(_running);
     }
 
     private string NormalizeRelayAddress(string raw)
@@ -814,6 +815,18 @@ public class MainForm : Form
                 _forwarder?.Dispose(); _forwarder = null;
                 _relays = new RelayController();
                 AppendLog("Initializing relay (hardware only)...");
+
+                // New check: if FogShortMs is 0, warn and set to 1500ms default
+                if (Settings.Default.FogShortMs <= 0)
+                {
+                    AppendLog("WARNING: FogShortMs is configured as 0 (disabled). Setting to default 1500ms.");
+                    Settings.Default.FogShortMs = 1500;
+                    Settings.Default.Save();
+                }
+
+                // New: if FogLongMs is 0, treat as infinite (no automatic off)
+                if (Settings.Default.FogLongMs <= 0) Settings.Default.FogLongMs = int.MaxValue;
+
                 if (!_relays.Init())
                 {
                     AppendLog("Relay init failed.");
@@ -986,12 +999,46 @@ public class MainForm : Form
                 _watcher.HeatWarning += _onHeatWarning;
                 _watcher.HeatDamage += _onHeatDamage;
 
+                // Subscribe to custom relay events (forward them to relay PC)
+                _watcher.CustomRelayEvent += relayIndex =>
+                {
+                    if (!_running) return;
+                    var durations = Settings.Default.RelayActivateMs;
+                    
+                    // Only forward the specific relay that matched the event
+                    if (relayIndex >= 0 && relayIndex < durations.Length)
+                    {
+                        if (TryBeginActivation(relayIndex, "CustomEvent"))
+                        {
+                            _ = Task.Run(async () =>
+                            {
+                                var dur = durations[relayIndex];
+                                AppendLog($"Custom event detected - forwarding Relay {relayIndex + 1}");
+                                bool ok = false;
+                                if (_forwarder != null)
+                                {
+                                    ok = await _forwarder.SendFogAsync(relayIndex, dur).ConfigureAwait(false);
+                                }
+                                if (ok)
+                                {
+                                    if (IsHandleCreated)
+                                    {
+                                        if (InvokeRequired) BeginInvoke((Action)(() => StartRelayVisualCountdown(relayIndex, dur)));
+                                        else StartRelayVisualCountdown(relayIndex, dur);
+                                    }
+                                }
+                            });
+                        }
+                    }
+                };
+
                 EnsureForwarderCreated();
                 _watcher.Start();
                 _running = true;
                 btnStartStop.Text = "Stop";
-                SetManualButtonsEnabled(true);
-                AppendLog("Watcher started (Game PC).");
+                SetManualButtonsEnabled(true); // Game PC CAN manually toggle relays via forwarder (same as Stand Alone)
+                RegisterHotKeys(); // Game PC can also use hotkeys to control relays
+                AppendLog("Journal watcher started (Game PC - forwarding to Relay).");
             }
         }
         else
@@ -1296,7 +1343,7 @@ public class MainForm : Form
                         try { _relays.SetRelay(relayIndex, state); UpdateRelayButtonVisual(relayIndex, state); res.StatusCode = 200; await res.WriteAsJsonAsync(new { result = "ok", action = "setRelay", relayIndex, state }).ConfigureAwait(false); }
                         catch (Exception ex) { res.StatusCode = 500; await res.WriteAsync($"Error: {ex.Message}").ConfigureAwait(false); }
                     }
-                    else { res.StatusCode = 200; await res.WriteAsJsonAsync(new { result = "simulated", action = "setRelay" }).ConfigureAwait(false); }
+                    else { res.StatusCode = 200; await res.WriteAsJsonAsync(new { result = "simulated", action = "setRelay" }). ConfigureAwait(false); }
                     return;
                 }
                 res.StatusCode = 400;
