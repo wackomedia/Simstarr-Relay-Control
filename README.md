@@ -12,9 +12,9 @@ The program is designed so its features can be distributed across multiple compu
 Stand-Alone Mode will be the most useful for Elite Dangerous players, while Relay PC Mode by itself will be ideal for users who want a simple way to control the status of their hardware for unrelated purposes and don't need to access the game's log file. 
 
 ## What It Does
-- Watches the Elite Dangerous journal file for heat warnings / heat damage.
-- Activates relay 1 for 3 sec for WARNING and 5 sec for DAMAGE, then forces cooldown for 5 seconds.
-- ON/OFF control for three extra relays currently not yet assigned to real-life devices.
+- Watches the Elite Dangerous journal file for specified events.
+- Activates relay then forces cooldown for specified times.
+- ON/OFF control buttons manual use.
 - Provides global hotkeys so apps like Touch Portal and Voice Attack can trigger actions.
 
 ## Hotkeys
