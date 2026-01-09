@@ -9,6 +9,7 @@ using System.Windows.Forms;
 using System.Net;
 using System.Net.Sockets;
 using RelayTest.Properties;
+using RelayTest;
 #if EMBED_HTTP_SERVER
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -436,7 +437,7 @@ public class MainForm : Form
         }
     }
 
-    // Backwards-compatible wrapper (defaults to relay 0 visual)
+    // Backwards-compatible wrapper (default to relay 0 visual)
     private void SetFogActive(int durationMs) => StartRelayVisualCountdown(0, durationMs);
 
     // Visual countdown + cooldown display for a specific relay button.
@@ -650,7 +651,7 @@ public class MainForm : Form
         bool ok = false;
         if (_forwarder != null)
         {
-            ok = await _forwarder.SendFogAsync(relayIndex, durationMs).ConfigureAwait(false);
+            ok = await _forwarder.SendFogAsync(relayIndex, durationMs, Settings.Default.ActivationCooldownMs).ConfigureAwait(false);
         }
 
         if (ok)
@@ -660,7 +661,7 @@ public class MainForm : Form
                 if (InvokeRequired) BeginInvoke((Action)(() => StartRelayVisualCountdown(relayIndex, durationMs)));
                 else StartRelayVisualCountdown(relayIndex, durationMs);
             }
-            AppendLog($"Forwarded: Fog relay {relayIndex + 1} {durationMs / 1000}s");
+            AppendLog($"Forwarded: Fog relay {relayIndex + 1} {durationMs / 1000}s with {Settings.Default.ActivationCooldownMs / 1000}s cooldown");
         }
         else AppendLog("Forward failed: Fog");
     }
@@ -744,7 +745,7 @@ public class MainForm : Form
             }
         }
 
-        var ok = await _forwarder.SendSetRelayAsync(relayIndex, desired).ConfigureAwait(false);
+        var ok = await _forwarder.SendSetRelayAsync(relayIndex, desired, Settings.Default.ActivationCooldownMs).ConfigureAwait(false);
         if (ok)
         {
             lock (_activationLock) { _relayStates[relayIndex] = desired; }
@@ -948,21 +949,24 @@ public class MainForm : Form
                         for (int i = 0; i < durations.Length && i < 4; i++)
                         {
                             if (!TryBeginActivation(i, "HeatWarning")) continue;
-                            AppendLog($"HeatWarning detected - forwarding Relay {i + 1}");
-                            var dur = durations[i];
-                            bool ok = false;
-                            if (_forwarder != null)
+                            _ = Task.Run(async () =>
                             {
-                                ok = await _forwarder.SendFogAsync(i, dur).ConfigureAwait(false);
-                            }
-                            if (ok)
-                            {
-                                if (IsHandleCreated)
+                                var dur = durations[i];
+                                AppendLog($"HeatWarning detected - forwarding Relay {i + 1}");
+                                bool ok = false;
+                                if (_forwarder != null)
                                 {
-                                    if (InvokeRequired) BeginInvoke((Action)(() => StartRelayVisualCountdown(i, dur)));
-                                    else StartRelayVisualCountdown(i, dur);
+                                    ok = await _forwarder.SendFogAsync(i, dur, Settings.Default.ActivationCooldownMs).ConfigureAwait(false);
                                 }
-                            }
+                                if (ok)
+                                {
+                                    if (IsHandleCreated)
+                                    {
+                                        if (InvokeRequired) BeginInvoke((Action)(() => StartRelayVisualCountdown(i, dur)));
+                                        else StartRelayVisualCountdown(i, dur);
+                                    }
+                                }
+                            });
                         }
                     });
                 };
@@ -976,21 +980,24 @@ public class MainForm : Form
                         for (int i = 0; i < durations.Length && i < 4; i++)
                         {
                             if (!TryBeginActivation(i, "HeatDamage")) continue;
-                            AppendLog($"HeatDamage detected - forwarding Relay {i + 1}");
-                            var dur = durations[i];
-                            bool ok = false;
-                            if (_forwarder != null)
+                            _ = Task.Run(async () =>
                             {
-                                ok = await _forwarder.SendFogAsync(i, dur).ConfigureAwait(false);
-                            }
-                            if (ok)
-                            {
-                                if (IsHandleCreated)
+                                var dur = durations[i];
+                                AppendLog($"HeatDamage detected - forwarding Relay {i + 1}");
+                                bool ok = false;
+                                if (_forwarder != null)
                                 {
-                                    if (InvokeRequired) BeginInvoke((Action)(() => StartRelayVisualCountdown(i, dur)));
-                                    else StartRelayVisualCountdown(i, dur);
+                                    ok = await _forwarder.SendFogAsync(i, dur, Settings.Default.ActivationCooldownMs).ConfigureAwait(false);
                                 }
-                            }
+                                if (ok)
+                                {
+                                    if (IsHandleCreated)
+                                    {
+                                        if (InvokeRequired) BeginInvoke((Action)(() => StartRelayVisualCountdown(i, dur)));
+                                        else StartRelayVisualCountdown(i, dur);
+                                    }
+                                }
+                            });
                         }
                     });
                 };
@@ -1017,7 +1024,7 @@ public class MainForm : Form
                                 bool ok = false;
                                 if (_forwarder != null)
                                 {
-                                    ok = await _forwarder.SendFogAsync(relayIndex, dur).ConfigureAwait(false);
+                                    ok = await _forwarder.SendFogAsync(relayIndex, dur, Settings.Default.ActivationCooldownMs).ConfigureAwait(false);
                                 }
                                 if (ok)
                                 {
@@ -1130,7 +1137,7 @@ public class MainForm : Form
                     for (int i = 0; i < durationsMs.Length && i < 4; i++)
                     {
                         var dur = durationsMs[i];
-                        var ok = await _forwarder.SendFogAsync(i, dur).ConfigureAwait(false);
+                        var ok = await _forwarder.SendFogAsync(i, dur, Settings.Default.ActivationCooldownMs).ConfigureAwait(false);
                         if (ok)
                         {
                             if (IsHandleCreated)
@@ -1210,23 +1217,43 @@ public class MainForm : Form
     {
         try { UnregisterHotKeys(); } catch { }
 
-        // Register hotkeys for relays 1-4 (no modifiers, just the keys)
-        for (int i = 0; i < 4; i++)
+        // Parse and register Relay 2-4 toggle hotkeys
+        var hotkeys = new (int id, string configKey, string defaultValue)[]
         {
-            int id = HOT_R2_TOGGLE + i;
-            uint vk = (uint)(Keys.D2 + i);
-            RegisterHotKey(Handle, id, 0, vk);
-        }
+            (HOT_R2_TOGGLE, nameof(Settings.Default.HotkeyRelay2Toggle), Settings.Default.HotkeyRelay2Toggle),
+            (HOT_R3_TOGGLE, nameof(Settings.Default.HotkeyRelay3Toggle), Settings.Default.HotkeyRelay3Toggle),
+            (HOT_R4_TOGGLE, nameof(Settings.Default.HotkeyRelay4Toggle), Settings.Default.HotkeyRelay4Toggle),
+            (HOT_R1_SHORT, nameof(Settings.Default.HotkeyRelay1Short), Settings.Default.HotkeyRelay1Short),
+            (HOT_R1_LONG, nameof(Settings.Default.HotkeyRelay1Long), Settings.Default.HotkeyRelay1Long),
+            (HOT_STARTSTOP, nameof(Settings.Default.HotkeyStartStop), Settings.Default.HotkeyStartStop),
+        };
 
-        AppendLog("Hotkeys registered.");
+        foreach (var (id, configKey, hotkeyString) in hotkeys)
+        {
+            if (HotkeyParser.TryParseHotkey(hotkeyString, out uint modifiers, out uint vk))
+            {
+                if (RegisterHotKey(Handle, id, modifiers, vk))
+                {
+                    AppendLog($"Hotkey {configKey}: {hotkeyString} registered successfully");
+                }
+                else
+                {
+                    AppendLog($"WARNING: Failed to register hotkey {configKey}: {hotkeyString}");
+                }
+            }
+            else
+            {
+                AppendLog($"ERROR: Invalid hotkey format for {configKey}: {hotkeyString}");
+            }
+        }
     }
 
     private void UnregisterHotKeys()
     {
         // Unregister all hotkeys registered by this form.
-        for (int i = 0; i < 4; i++)
+        var hotkeys = new int[] { HOT_R2_TOGGLE, HOT_R3_TOGGLE, HOT_R4_TOGGLE, HOT_R1_SHORT, HOT_R1_LONG, HOT_STARTSTOP };
+        foreach (var id in hotkeys)
         {
-            int id = HOT_R2_TOGGLE + i;
             UnregisterHotKey(Handle, id);
         }
     }
@@ -1326,9 +1353,17 @@ public class MainForm : Form
                 {
                     int relayIndex = root.TryGetProperty("relayIndex", out var ri) && ri.TryGetInt32(out var r) ? r : 0;
                     int durationMs = root.TryGetProperty("durationMs", out var dm) && dm.TryGetInt32(out var d) ? d : 1500;
+                    int cooldownMs = root.TryGetProperty("cooldownMs", out var cm) && cm.TryGetInt32(out var c) ? c : 5000;
+                    
                     if (_relays != null)
                     {
-                        try { _relays.FogBlast(relayIndex, durationMs); StartRelayVisualCountdown(relayIndex, durationMs); res.StatusCode = 200; await res.WriteAsJsonAsync(new { result = "ok", action = "fog", relayIndex, durationMs }).ConfigureAwait(false); }
+                        try 
+                        { 
+                            _relays.FogBlast(relayIndex, durationMs); 
+                            StartRelayVisualCountdown(relayIndex, durationMs); 
+                            res.StatusCode = 200; 
+                            await res.WriteAsJsonAsync(new { result = "ok", action = "fog", relayIndex, durationMs, cooldownMs }).ConfigureAwait(false); 
+                        }
                         catch (Exception ex) { res.StatusCode = 500; await res.WriteAsync($"Error: {ex.Message}").ConfigureAwait(false); }
                     }
                     else { res.StatusCode = 200; await res.WriteAsJsonAsync(new { result = "simulated", action = "fog" }).ConfigureAwait(false); }
@@ -1338,9 +1373,28 @@ public class MainForm : Form
                 {
                     int relayIndex = root.TryGetProperty("relayIndex", out var ri2) && ri2.TryGetInt32(out var r2) ? r2 : 0;
                     bool state = root.TryGetProperty("state", out var s) && s.ValueKind == System.Text.Json.JsonValueKind.True;
+                    int cooldownMs = root.TryGetProperty("cooldownMs", out var cm) && cm.TryGetInt32(out var c) ? c : 5000;
+                    
                     if (_relays != null)
                     {
-                        try { _relays.SetRelay(relayIndex, state); UpdateRelayButtonVisual(relayIndex, state); res.StatusCode = 200; await res.WriteAsJsonAsync(new { result = "ok", action = "setRelay", relayIndex, state }).ConfigureAwait(false); }
+                        try 
+                        { 
+                            _relays.SetRelay(relayIndex, state); 
+                            UpdateRelayButtonVisual(relayIndex, state);
+                            
+                            // If turning ON, start visual countdown with the received cooldown
+                            if (state)
+                            {
+                                StartRelayVisualCountdown(relayIndex, Settings.Default.RelayActivateMs[relayIndex]);
+                            }
+                            else
+                            {
+                                UpdateRelayButtonVisual(relayIndex, false);
+                            }
+                            
+                            res.StatusCode = 200; 
+                            await res.WriteAsJsonAsync(new { result = "ok", action = "setRelay", relayIndex, state, cooldownMs }).ConfigureAwait(false); 
+                        }
                         catch (Exception ex) { res.StatusCode = 500; await res.WriteAsync($"Error: {ex.Message}").ConfigureAwait(false); }
                     }
                     else { res.StatusCode = 200; await res.WriteAsJsonAsync(new { result = "simulated", action = "setRelay" }). ConfigureAwait(false); }

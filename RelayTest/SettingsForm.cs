@@ -14,6 +14,7 @@ public class SettingsForm : Form
     private readonly ComboBox cmbMode;
     private readonly TextBox[] txtRelayEventName = new TextBox[4];
     private readonly NumericUpDown[] nudRelayDuration = new NumericUpDown[4];
+    private readonly TextBox[] txtHotkeys = new TextBox[6];
     private readonly NumericUpDown nudCooldownSeconds;
     private readonly Button btnSave;
     private readonly Button btnCancel;
@@ -140,7 +141,45 @@ public class SettingsForm : Form
         layout.Controls.Add(nudCooldownSeconds, 1, row);
         row++;
 
-        // Per-relay event name + duration — one pair per relay
+        // Hotkey configuration section
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.Controls.Add(MakeLabel("Hotkey Configuration (e.g., Shift+D1, Ctrl+Alt+D2):"), 0, row);
+        row++;
+
+        var hotkeyTable = new TableLayoutPanel
+        {
+            ColumnCount = 2,
+            AutoSize = true,
+            Dock = DockStyle.Fill,
+        };
+        hotkeyTable.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        hotkeyTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+
+        var hotkeyConfigs = new (string label, string settingName, string defaultValue)[]
+        {
+            ("Relay 1 Short Fog:", nameof(Settings.Default.HotkeyRelay1Short), Settings.Default.HotkeyRelay1Short),
+            ("Relay 1 Long Fog:", nameof(Settings.Default.HotkeyRelay1Long), Settings.Default.HotkeyRelay1Long),
+            ("Relay 2 Toggle:", nameof(Settings.Default.HotkeyRelay2Toggle), Settings.Default.HotkeyRelay2Toggle),
+            ("Relay 3 Toggle:", nameof(Settings.Default.HotkeyRelay3Toggle), Settings.Default.HotkeyRelay3Toggle),
+            ("Relay 4 Toggle:", nameof(Settings.Default.HotkeyRelay4Toggle), Settings.Default.HotkeyRelay4Toggle),
+            ("Start/Stop:", nameof(Settings.Default.HotkeyStartStop), Settings.Default.HotkeyStartStop),
+        };
+
+        int hotkeyRow = 0;
+        foreach (var (label, settingName, defaultValue) in hotkeyConfigs)
+        {
+            hotkeyTable.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            hotkeyTable.Controls.Add(new Label { Text = label, AutoSize = true, Anchor = AnchorStyles.Left }, 0, hotkeyRow);
+            var tb = new TextBox { Text = defaultValue ?? string.Empty, Dock = DockStyle.Fill };
+            txtHotkeys[hotkeyRow] = tb;
+            hotkeyTable.Controls.Add(tb, 1, hotkeyRow);
+            hotkeyRow++;
+        }
+
+        layout.Controls.Add(hotkeyTable, 1, row);
+        row++;
+
+        // Per-relay event name + duration – one pair per relay
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.Controls.Add(MakeLabel("Per-relay event name and activation duration (seconds):"), 0, row);
 
@@ -289,6 +328,14 @@ public class SettingsForm : Form
 
         // Save shared activation cooldown (seconds -> ms)
         Settings.Default.ActivationCooldownMs = (int)nudCooldownSeconds.Value * 1000;
+
+        // Save hotkey configurations
+        Settings.Default.HotkeyRelay1Short = txtHotkeys[0].Text?.Trim() ?? Settings.Default.HotkeyRelay1Short;
+        Settings.Default.HotkeyRelay1Long = txtHotkeys[1].Text?.Trim() ?? Settings.Default.HotkeyRelay1Long;
+        Settings.Default.HotkeyRelay2Toggle = txtHotkeys[2].Text?.Trim() ?? Settings.Default.HotkeyRelay2Toggle;
+        Settings.Default.HotkeyRelay3Toggle = txtHotkeys[3].Text?.Trim() ?? Settings.Default.HotkeyRelay3Toggle;
+        Settings.Default.HotkeyRelay4Toggle = txtHotkeys[4].Text?.Trim() ?? Settings.Default.HotkeyRelay4Toggle;
+        Settings.Default.HotkeyStartStop = txtHotkeys[5].Text?.Trim() ?? Settings.Default.HotkeyStartStop;
 
         // Save relay event names and durations (manual entry)
         var events = new string[4];

@@ -17,16 +17,6 @@ Stand-Alone Mode will be the most useful for Elite Dangerous players, while Rela
 - ON/OFF control buttons manual use.
 - Provides global hotkeys so apps like Touch Portal and Voice Attack can trigger actions.
 
-## Hotkeys
-Ctrl+Alt+1  Fog (3s)  
-Ctrl+Alt+6  Fog (5s)  
-Ctrl+Alt+2  Relay 2 toggle  
-Ctrl+Alt+3  Relay 3 toggle  
-Ctrl+Alt+4  Relay 4 toggle  
-Ctrl+Alt+5  Start / Stop application
-
-(Numpad 1–5 duplicates these hotkeys.)
-
 ## Modes
 1. Stand Alone – one app instance for everything.
 2. Relay PC – The PC that has the hardware, separate from game.

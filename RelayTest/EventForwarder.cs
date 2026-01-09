@@ -22,15 +22,15 @@ namespace RelayTest.Properties
             _endpoint = new Uri(baseUrl.TrimEnd('/') + "/api/relay");
         }
 
-        public async Task<bool> SendFogAsync(int relayIndex, int durationMs)
+        public async Task<bool> SendFogAsync(int relayIndex, int durationMs, int cooldownMs = 0)
         {
-            var payload = new { action = "fog", relayIndex, durationMs, timestamp = DateTime.UtcNow };
+            var payload = new { action = "fog", relayIndex, durationMs, cooldownMs, timestamp = DateTime.UtcNow };
             return await PostJsonAsync(payload).ConfigureAwait(false);
         }
 
-        public async Task<bool> SendSetRelayAsync(int relayIndex, bool state)
+        public async Task<bool> SendSetRelayAsync(int relayIndex, bool state, int cooldownMs = 0)
         {
-            var payload = new { action = "setRelay", relayIndex, state, timestamp = DateTime.UtcNow };
+            var payload = new { action = "setRelay", relayIndex, state, cooldownMs, timestamp = DateTime.UtcNow };
             return await PostJsonAsync(payload).ConfigureAwait(false);
         }
 

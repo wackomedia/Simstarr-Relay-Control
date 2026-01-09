@@ -33,11 +33,19 @@ namespace RelayTest.Properties
         // Per-relay selected event type name (4 relays)
         private readonly string[] _relayEventTypes = new string[4] { string.Empty, string.Empty, string.Empty, string.Empty };
 
-        // Per-relay activation durations (milliseconds) ? new setting
+        // Per-relay activation durations (milliseconds) – new setting
         private readonly int[] _relayActivateMs = new int[4] { 3000, 3000, 3000, 3000 };
 
         // Shared activation cooldown (milliseconds)
         private int _activationCooldownMs = 5000;
+
+        // Hotkey configurations (Key1+Key2 format, e.g., "Shift+D1" or "Ctrl+Alt+D2")
+        private string _hotkeyRelay2Toggle = "D2";
+        private string _hotkeyRelay3Toggle = "D3";
+        private string _hotkeyRelay4Toggle = "D4";
+        private string _hotkeyRelay1Short = "Shift+D1";
+        private string _hotkeyRelay1Long = "Shift+Alt+D1";
+        private string _hotkeyStartStop = "Shift+D5";
 
         // SettingsForm window/persisted geometry
         private int _settingsFormWidth = 0;
@@ -103,6 +111,43 @@ namespace RelayTest.Properties
         {
             get => _activationCooldownMs;
             set => _activationCooldownMs = ClampDuration(value, 5000);
+        }
+
+        // Hotkey configurations
+        public string HotkeyRelay2Toggle
+        {
+            get => _hotkeyRelay2Toggle;
+            set => _hotkeyRelay2Toggle = value?.Trim() ?? "D2";
+        }
+
+        public string HotkeyRelay3Toggle
+        {
+            get => _hotkeyRelay3Toggle;
+            set => _hotkeyRelay3Toggle = value?.Trim() ?? "D3";
+        }
+
+        public string HotkeyRelay4Toggle
+        {
+            get => _hotkeyRelay4Toggle;
+            set => _hotkeyRelay4Toggle = value?.Trim() ?? "D4";
+        }
+
+        public string HotkeyRelay1Short
+        {
+            get => _hotkeyRelay1Short;
+            set => _hotkeyRelay1Short = value?.Trim() ?? "Shift+D1";
+        }
+
+        public string HotkeyRelay1Long
+        {
+            get => _hotkeyRelay1Long;
+            set => _hotkeyRelay1Long = value?.Trim() ?? "Shift+Alt+D1";
+        }
+
+        public string HotkeyStartStop
+        {
+            get => _hotkeyStartStop;
+            set => _hotkeyStartStop = value?.Trim() ?? "Shift+D5";
         }
 
         // Persisted SettingsForm geometry - width/height/left/top and window state (Normal/Maximized/Minimized)
@@ -216,6 +261,12 @@ namespace RelayTest.Properties
                         RelayEventTypes = (string[])_relayEventTypes.Clone(),
                         RelayActivateMs = (int[])_relayActivateMs.Clone(),
                         ActivationCooldownMs = _activationCooldownMs,
+                        HotkeyRelay2Toggle = _hotkeyRelay2Toggle,
+                        HotkeyRelay3Toggle = _hotkeyRelay3Toggle,
+                        HotkeyRelay4Toggle = _hotkeyRelay4Toggle,
+                        HotkeyRelay1Short = _hotkeyRelay1Short,
+                        HotkeyRelay1Long = _hotkeyRelay1Long,
+                        HotkeyStartStop = _hotkeyStartStop,
                         SettingsFormWidth = _settingsFormWidth == 0 ? null : _settingsFormWidth,
                         SettingsFormHeight = _settingsFormHeight == 0 ? null : _settingsFormHeight,
                         SettingsFormLeft = _settingsFormLeft == int.MinValue ? null : _settingsFormLeft,
@@ -267,7 +318,7 @@ namespace RelayTest.Properties
                     catch (Exception mex)
                     {
                         System.Diagnostics.Debug.WriteLine($"Failed to migrate legacy settings: {mex.Message}");
-                        // Continue ? still attempt to load whichever exists.
+                        // Continue – still attempt to load whichever exists.
                     }
                 }
 
@@ -310,6 +361,13 @@ namespace RelayTest.Properties
                             _relayActivateMs[i] = i < model.RelayActivateMs.Length ? ClampDuration(model.RelayActivateMs[i], _relayActivateMs[i]) : _relayActivateMs[i];
                     }
 
+                    if (!string.IsNullOrWhiteSpace(model.HotkeyRelay2Toggle)) _hotkeyRelay2Toggle = model.HotkeyRelay2Toggle;
+                    if (!string.IsNullOrWhiteSpace(model.HotkeyRelay3Toggle)) _hotkeyRelay3Toggle = model.HotkeyRelay3Toggle;
+                    if (!string.IsNullOrWhiteSpace(model.HotkeyRelay4Toggle)) _hotkeyRelay4Toggle = model.HotkeyRelay4Toggle;
+                    if (!string.IsNullOrWhiteSpace(model.HotkeyRelay1Short)) _hotkeyRelay1Short = model.HotkeyRelay1Short;
+                    if (!string.IsNullOrWhiteSpace(model.HotkeyRelay1Long)) _hotkeyRelay1Long = model.HotkeyRelay1Long;
+                    if (!string.IsNullOrWhiteSpace(model.HotkeyStartStop)) _hotkeyStartStop = model.HotkeyStartStop;
+
                     if (model.SettingsFormWidth.HasValue) _settingsFormWidth = model.SettingsFormWidth.Value;
                     if (model.SettingsFormHeight.HasValue) _settingsFormHeight = model.SettingsFormHeight.Value;
                     if (model.SettingsFormLeft.HasValue) _settingsFormLeft = model.SettingsFormLeft.Value;
@@ -336,6 +394,12 @@ namespace RelayTest.Properties
             public string[]? RelayEventTypes { get; set; }
             public int[]? RelayActivateMs { get; set; }
             public int? ActivationCooldownMs { get; set; }
+            public string? HotkeyRelay2Toggle { get; set; }
+            public string? HotkeyRelay3Toggle { get; set; }
+            public string? HotkeyRelay4Toggle { get; set; }
+            public string? HotkeyRelay1Short { get; set; }
+            public string? HotkeyRelay1Long { get; set; }
+            public string? HotkeyStartStop { get; set; }
 
             public int? SettingsFormWidth { get; set; }
             public int? SettingsFormHeight { get; set; }
